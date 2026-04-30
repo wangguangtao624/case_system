@@ -176,6 +176,26 @@ function initializeDatabase(db: Database.Database) {
     db.exec(`UPDATE cases SET test_result = 'Block' WHERE test_result = 'Blocked'`);
   } catch { /* ignore migration errors */ }
 
+  // Migration: add is_archived column to projects table
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN is_archived INTEGER DEFAULT 0`);
+  } catch { /* column already exists */ }
+
+  // Migration: add archived_at column to projects table
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN archived_at TEXT DEFAULT NULL`);
+  } catch { /* column already exists */ }
+
+  // Migration: add archive_note column to projects table
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN archive_note TEXT DEFAULT ''`);
+  } catch { /* column already exists */ }
+
+  // Migration: add archived_by column to projects table
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN archived_by TEXT DEFAULT ''`);
+  } catch { /* column already exists */ }
+
   // Initialize default users if not exists
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
   if (userCount.count === 0) {

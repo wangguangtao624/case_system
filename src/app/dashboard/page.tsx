@@ -35,6 +35,7 @@ interface TreeNode {
   testerId?: number;
   testerName?: string;
   resolvedTesterNames?: string;
+  isArchived?: boolean;
 }
 
 interface CaseData {
@@ -113,6 +114,12 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [allUsers, setAllUsers] = useState<UserItem[]>([]);
   const [testerFilter, setTesterFilter] = useState<string>(''); // '' = all, 'my' = my tasks, user_id = specific
+  const [projectFilter, setProjectFilter] = useState<string>('active'); // 'active', 'archived', 'all'
+  const [showArchiveSpace, setShowArchiveSpace] = useState(false);
+  const [archiveDialog, setArchiveDialog] = useState<{ projectId: number; projectName: string } | null>(null);
+  const [archiveNote, setArchiveNote] = useState('');
+  const [archiving, setArchiving] = useState(false);
+  const [showKanban, setShowKanban] = useState(false);
 
   // Dialogs
   const [showUserMgmt, setShowUserMgmt] = useState(false);
@@ -121,10 +128,11 @@ export default function DashboardPage() {
   const [showPreview, setShowPreview] = useState<{ fileId: number; content: string; filename: string; truncated: boolean; isImage?: boolean } | null>(null);
   const [statsPreview, setStatsPreview] = useState<{ level: 'project' | 'module'; id: number; name: string } | null>(null);
 
-  const loadTree = useCallback(async (filterTesterId?: string) => {
+  const loadTree = useCallback(async (filterTesterId?: string, archiveFilter?: string) => {
     try {
       const params = new URLSearchParams();
       if (filterTesterId) params.set('testerId', filterTesterId);
+      if (archiveFilter) params.set('archive', archiveFilter);
       const res = await fetch(`/api/tree?${params.toString()}`);
       const data = await res.json();
       if (data.tree) {
@@ -215,13 +223,18 @@ export default function DashboardPage() {
       if (data.case) {
         setSelectedCase(data.case as CaseData);
         setSelectedFiles((data.files || []) as FileData[]);
-        setCasePermissions(data.permissions || { isManager: false, isAssignedTester: false, canEditCore: false, canEditResult: false });
+        let permissions = data.permissions || { isManager: false, isAssignedTester: false, canEditCore: false, canEditResult: false };
+        const projectNode = tree.find(p => p.dbId === (data.case as CaseData).project_id);
+        if (projectNode?.isArchived) {
+          permissions = { ...permissions, canEditCore: false, canEditResult: false };
+        }
+        setCasePermissions(permissions);
         setCaseTester(data.tester || null);
       }
     } catch (error) {
       console.error('Load case error:', error);
     }
-  }, []);
+  }, [tree]);
 
   const findNodeById = (nodes: TreeNode[], id: string): TreeNode | null => {
     for (const node of nodes) {
@@ -243,11 +256,76 @@ export default function DashboardPage() {
     setTesterFilter(value);
     setSelectedCase(null);
     setSelectedNodeId(null);
-    if (value === '' || value === 'my') {
-      const filterId = value === 'my' && user ? String(user.id) : '';
-      loadTree(filterId);
-    } else {
-      loadTree(value);
+    const filterId = value === 'my' && user ? String(user.id) : value;
+    loadTree(filterId || '', projectFilter);
+  };
+
+  const handleProjectFilterChange = (value: string) => {
+    setProjectFilter(value);
+    setSelectedCase(null);
+    setSelectedNodeId(null);
+    const filterId = testerFilter === 'my' && user ? String(user.id) : testerFilter;
+    loadTree(filterId || '', value);
+  };
+
+  const handleArchive = async () => {
+    if (!archiveDialog) return;
+    setArchiving(true);
+    try {
+      const res = await fetch('/api/archives', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: archiveDialog.projectId, archiveNote }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setArchiveDialog(null);
+        setArchiveNote('');
+        loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
+      } else {
+        alert(data.error || '归档失败');
+      }
+    } catch {
+      alert('归档失败');
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  const handleDeleteArchived = async (projectId: number) => {
+    if (!confirm('确定要删除此归档项目及其所有数据吗？此操作不可撤销。')) return;
+    try {
+      const res = await fetch(`/api/archives?projectId=${projectId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
+        if (showArchiveSpace) {
+          setShowArchiveSpace(false);
+        }
+      } else {
+        alert(data.error || '删除失败');
+      }
+    } catch {
+      alert('删除失败');
+    }
+  };
+
+  const handleExportForArchive = async (projectId: number, projectName: string) => {
+    try {
+      const res = await fetch(`/api/cases/export?projectId=${projectId}`);
+      if (!res.ok) {
+        alert('导出失败');
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${projectName}.xlsx`;
+      link.click();
+      window.URL.revokeObjectURL(url);
+    } catch {
+      alert('导出失败，请稍后重试');
     }
   };
 
@@ -330,18 +408,25 @@ export default function DashboardPage() {
           {!sidebarCollapsed && (
             <SidebarTree
               username={user.username}
+              user={user}
               tree={tree}
               expandedNodes={expandedNodes}
               setExpandedNodes={setExpandedNodes}
               selectedNodeId={selectedNodeId}
               onSelectCase={handleSelectCase}
-              onTreeChange={() => loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter)}
+              onTreeChange={() => loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter)}
               onToggleSidebar={() => setSidebarCollapsed(true)}
               onPreview={(level, id, name) => setStatsPreview({ level, id, name })}
               isManager={isManager}
               allUsers={allUsers}
               testerFilter={testerFilter}
               onTesterFilterChange={handleTesterFilterChange}
+              projectFilter={projectFilter}
+              onProjectFilterChange={handleProjectFilterChange}
+              onArchive={(projectId, projectName) => setArchiveDialog({ projectId, projectName })}
+              onOpenArchiveSpace={() => setShowArchiveSpace(true)}
+              onOpenKanban={() => setShowKanban(true)}
+              onDeleteArchived={handleDeleteArchived}
             />
           )}
         </aside>
@@ -498,6 +583,66 @@ export default function DashboardPage() {
           }}
         />
       )}
+
+      {/* Archive Dialog */}
+      {archiveDialog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}>
+          <div className="bg-white rounded-xl shadow-2xl w-[420px] max-h-[80vh] overflow-hidden">
+            <div className="px-6 py-4 border-b" style={{ borderColor: '#EEEEEE' }}>
+              <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>归档项目</h3>
+              <p className="text-sm mt-1" style={{ color: '#6B7280' }}>归档后项目将变为只读，仅管理员可修改归档信息</p>
+            </div>
+            <div className="px-6 py-4">
+              <div className="mb-3">
+                <label className="block text-sm font-medium mb-1" style={{ color: '#374151' }}>项目名称</label>
+                <div className="text-sm px-3 py-2 rounded border" style={{ backgroundColor: '#F9FAFB', borderColor: '#E5E7EB', color: '#1F2937' }}>{archiveDialog.projectName}</div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1" style={{ color: '#374151' }}>归档备注</label>
+                <textarea
+                  value={archiveNote}
+                  onChange={(e) => setArchiveNote(e.target.value)}
+                  placeholder="请输入归档原因或备注信息..."
+                  className="w-full px-3 py-2 text-sm border rounded resize-none"
+                  style={{ borderColor: '#D1D5DB', minHeight: '80px' }}
+                />
+              </div>
+            </div>
+            <div className="px-6 py-3 border-t flex justify-end gap-2" style={{ borderColor: '#EEEEEE' }}>
+              <button
+                onClick={() => { setArchiveDialog(null); setArchiveNote(''); }}
+                className="px-4 py-2 text-sm rounded border hover:bg-gray-50"
+                style={{ borderColor: '#D1D5DB', color: '#374151' }}
+              >
+                取消
+              </button>
+              <button
+                onClick={handleArchive}
+                disabled={archiving}
+                className="px-4 py-2 text-sm rounded text-white hover:opacity-90 disabled:opacity-50"
+                style={{ backgroundColor: '#D97706' }}
+              >
+                {archiving ? '归档中...' : '确认归档'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Archive Space Dialog */}
+      {showArchiveSpace && (
+        <ArchiveSpaceDialog
+          onClose={() => setShowArchiveSpace(false)}
+          onDeleteArchived={handleDeleteArchived}
+          onPreview={(level: 'project' | 'module', id: number, name: string) => { setShowArchiveSpace(false); setStatsPreview({ level, id, name }); }}
+          onExport={(projectId: number, name: string) => handleExportForArchive(projectId, name)}
+        />
+      )}
+
+      {/* Kanban Navigation */}
+      {showKanban && (
+        (() => { window.location.href = '/kanban'; return null; })()
+      )}
     </div>
   );
 }
@@ -505,6 +650,7 @@ export default function DashboardPage() {
 // ============ Sidebar Tree ============
 function SidebarTree({
   username,
+  user,
   tree,
   expandedNodes,
   setExpandedNodes,
@@ -517,8 +663,15 @@ function SidebarTree({
   allUsers,
   testerFilter,
   onTesterFilterChange,
+  projectFilter,
+  onProjectFilterChange,
+  onArchive,
+  onOpenArchiveSpace,
+  onOpenKanban,
+  onDeleteArchived,
 }: {
   username: string;
+  user: UserInfo;
   tree: TreeNode[];
   expandedNodes: Set<string>;
   setExpandedNodes: (nodes: Set<string>) => void;
@@ -531,6 +684,12 @@ function SidebarTree({
   allUsers: UserItem[];
   testerFilter: string;
   onTesterFilterChange: (value: string) => void;
+  projectFilter: string;
+  onProjectFilterChange: (value: string) => void;
+  onArchive: (projectId: number, projectName: string) => void;
+  onOpenArchiveSpace: () => void;
+  onOpenKanban: () => void;
+  onDeleteArchived: (projectId: number) => Promise<void> | void;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(null);
   const [editingNode, setEditingNode] = useState<{ node: TreeNode; newName: string } | null>(null);
@@ -844,6 +1003,9 @@ function SidebarTree({
           ) : (
             <span className="truncate flex-1 flex items-center gap-1">
               {node.name}
+              {node.isArchived && (
+                <span className="text-xs px-1 rounded" style={{ color: '#92400E', backgroundColor: '#FEF3C7', fontSize: '10px' }}>已归档</span>
+              )}
               {(node.type === 'project' || node.type === 'module') && node.resolvedTesterNames && (
                 <span className="text-xs px-1 rounded" style={{ color: '#999', backgroundColor: '#F5F5F5', fontSize: '10px' }}>{node.resolvedTesterNames}</span>
               )}
@@ -981,20 +1143,53 @@ function SidebarTree({
         </div>
       </div>
 
-      {/* Tester Filter */}
-      <div className="px-3 py-2 border-b" style={{ borderColor: '#EEEEEE' }}>
+      {/* Two-level Filter */}
+      <div className="px-3 py-2 border-b space-y-2" style={{ borderColor: '#EEEEEE' }}>
+        {/* Level 1: Project Status */}
+        <select
+          value={projectFilter}
+          onChange={(e) => onProjectFilterChange(e.target.value)}
+          className="w-full text-xs px-2 py-1.5 border rounded"
+          style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFF' }}
+        >
+          <option value="active">进行中的项目</option>
+          <option value="archived">已归档项目</option>
+          <option value="all">全部项目</option>
+        </select>
+        {/* Level 2: Tester */}
         <select
           value={testerFilter}
           onChange={(e) => onTesterFilterChange(e.target.value)}
           className="w-full text-xs px-2 py-1.5 border rounded"
           style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFF' }}
         >
-          <option value="">全部项目</option>
+          <option value="">全部执行者</option>
           {!isManager && <option value="my">我的任务</option>}
-          {allUsers.filter(u => !MANAGER_USERNAMES.includes(u.username)).map(u => (
+          {allUsers.map(u => (
             <option key={u.id} value={String(u.id)}>{u.username}</option>
           ))}
         </select>
+        {/* Action Buttons */}
+        <div className="flex items-center gap-1">
+          {projectFilter === 'active' && (
+            <button
+              onClick={onOpenKanban}
+              className="flex-1 text-xs px-2 py-1.5 rounded border hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"
+              style={{ borderColor: '#0073E6', color: '#0073E6' }}
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
+              项目看板
+            </button>
+          )}
+          <button
+            onClick={onOpenArchiveSpace}
+            className="flex-1 text-xs px-2 py-1.5 rounded border hover:bg-gray-50 transition-colors flex items-center justify-center gap-1"
+            style={{ borderColor: '#D1D5DB', color: '#6B7280' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 8v13H3V8" /><path d="M1 3h22v5H1z" /><path d="M10 12h4" /></svg>
+            归档空间
+          </button>
+        </div>
       </div>
 
       {/* Tree */}
@@ -1081,13 +1276,33 @@ function SidebarTree({
           >
             {isManager && contextMenu.node.type === 'project' && (
               <>
-                <button
-                  className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100"
-                  style={{ color: '#333' }}
-                  onClick={() => handleAddNode(contextMenu.node.id, 'module')}
-                >
-                  新建模块
-                </button>
+                {!contextMenu.node.isArchived && (
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-amber-50"
+                    style={{ color: '#D97706' }}
+                    onClick={() => { onArchive(contextMenu.node.dbId, contextMenu.node.name); setContextMenu(null); }}
+                  >
+                    归档项目
+                  </button>
+                )}
+                {contextMenu.node.isArchived && user?.role === 'admin' && (
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-red-50"
+                    style={{ color: '#EF4444' }}
+                    onClick={() => { onDeleteArchived(contextMenu.node.dbId); setContextMenu(null); }}
+                  >
+                    删除归档
+                  </button>
+                )}
+                {!contextMenu.node.isArchived && (
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100"
+                    style={{ color: '#333' }}
+                    onClick={() => handleAddNode(contextMenu.node.id, 'module')}
+                  >
+                    新建模块
+                  </button>
+                )}
                 <button
                   className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100"
                   style={{ color: '#0073E6' }}
@@ -1104,7 +1319,7 @@ function SidebarTree({
                 </button>
               </>
             )}
-            {isManager && contextMenu.node.type === 'module' && (
+            {isManager && contextMenu.node.type === 'module' && !contextMenu.node.isArchived && (
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100"
                 style={{ color: '#333' }}
@@ -3337,6 +3552,187 @@ interface CaseStat {
   status: 'passed' | 'failed' | 'blocked' | 'incomplete';
 }
 
+function ArchiveSpaceDialog({
+  onClose,
+  onDeleteArchived,
+  onPreview,
+  onExport,
+}: {
+  onClose: () => void;
+  onDeleteArchived: (projectId: number) => Promise<void> | void;
+  onPreview: (level: 'project' | 'module', id: number, name: string) => void;
+  onExport: (projectId: number, name: string) => void;
+}) {
+  const [archives, setArchives] = useState<Array<{
+    id: number; name: string; archive_note: string; archived_at: string;
+    archived_by: string; creator_name: string;
+  }>>([]);
+  const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+  const [archiveDetails, setArchiveDetails] = useState<{
+    modules: Array<{ id: number; name: string; caseCount: number; passed: number; failed: number; blocked: number; incomplete: number }>;
+    jiraLinks: Array<{ caseName: string; jiraLink: string; testResult: string }>;
+  } | null>(null);
+
+  useEffect(() => {
+    fetch('/api/archives?status=archived').then(r => r.json()).then(data => {
+      setArchives(data.projects || []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, []);
+
+  const loadArchiveDetails = async (projectId: number) => {
+    if (expandedId === projectId) { setExpandedId(null); setArchiveDetails(null); return; }
+    setExpandedId(projectId);
+    try {
+      const res = await fetch(`/api/stats/preview?level=project&id=${projectId}`);
+      const data = await res.json();
+      const modules = (data.modules || []).map((m: Record<string, unknown>) => ({
+        id: m.id, name: m.name,
+        caseCount: (m.summary as Record<string, number>)?.total || 0,
+        passed: (m.summary as Record<string, number>)?.passed || 0,
+        failed: (m.summary as Record<string, number>)?.failed || 0,
+        blocked: (m.summary as Record<string, number>)?.blocked || 0,
+        incomplete: (m.summary as Record<string, number>)?.incomplete || 0,
+      }));
+      const jiraLinks = (data.jiraLinks || []).filter((j: Record<string, unknown>) => j.jiraLink);
+      setArchiveDetails({ modules, jiraLinks });
+    } catch { setArchiveDetails(null); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}>
+      <div className="bg-white rounded-xl shadow-2xl w-[700px] max-h-[85vh] overflow-hidden flex flex-col">
+        <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: '#EEEEEE' }}>
+          <div className="flex items-center gap-2">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2"><path d="M21 8v13H3V8" /><path d="M1 3h22v5H1z" /><path d="M10 12h4" /></svg>
+            <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>归档空间</h3>
+            <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEF3C7', color: '#92400E' }}>{archives.length} 个已归档</span>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {loading ? (
+            <div className="text-center py-8 text-sm" style={{ color: '#9CA3AF' }}>加载中...</div>
+          ) : archives.length === 0 ? (
+            <div className="text-center py-8 text-sm" style={{ color: '#9CA3AF' }}>暂无归档项目</div>
+          ) : (
+            <div className="space-y-3">
+              {archives.map((archive) => (
+                <div key={archive.id} className="border rounded-lg overflow-hidden" style={{ borderColor: '#E5E7EB' }}>
+                  <div
+                    className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50"
+                    onClick={() => loadArchiveDetails(archive.id)}
+                  >
+                    <div className="flex items-center gap-3">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2" style={{ transform: expandedId === archive.id ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
+                        <polyline points="9 18 15 12 9 6" />
+                      </svg>
+                      <span className="font-medium text-sm" style={{ color: '#1F2937' }}>{archive.name}</span>
+                      <span className="text-xs" style={{ color: '#9CA3AF' }}>归档于 {archive.archived_at}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onPreview('project', archive.id, archive.name); }}
+                        className="text-xs px-2 py-1 rounded hover:bg-blue-50"
+                        style={{ color: '#0073E6' }}
+                      >
+                        查看进度
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onExport(archive.id, archive.name); }}
+                        className="text-xs px-2 py-1 rounded hover:bg-green-50"
+                        style={{ color: '#10B981' }}
+                      >
+                        导出
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); onDeleteArchived(archive.id); }}
+                        className="text-xs px-2 py-1 rounded hover:bg-red-50"
+                        style={{ color: '#EF4444' }}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+
+                  {expandedId === archive.id && archiveDetails && (
+                    <div className="px-4 py-3 border-t" style={{ borderColor: '#F3F4F6', backgroundColor: '#FAFAFA' }}>
+                      {archive.archive_note && (
+                        <div className="mb-3">
+                          <span className="text-xs font-medium" style={{ color: '#6B7280' }}>归档备注：</span>
+                          <span className="text-xs" style={{ color: '#374151' }}>{archive.archive_note}</span>
+                        </div>
+                      )}
+                      <div className="mb-3">
+                        <span className="text-xs font-medium" style={{ color: '#6B7280' }}>归档人：</span>
+                        <span className="text-xs" style={{ color: '#374151' }}>{archive.archived_by}</span>
+                      </div>
+
+                      {/* Module Stats */}
+                      <h4 className="text-xs font-semibold mb-2" style={{ color: '#374151' }}>模块统计</h4>
+                      <table className="w-full text-xs mb-3">
+                        <thead>
+                          <tr style={{ backgroundColor: '#F0F0F0' }}>
+                            <th className="text-left px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>模块</th>
+                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>总数</th>
+                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>通过</th>
+                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>失败</th>
+                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>阻塞</th>
+                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>未完成</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {archiveDetails.modules.map((mod) => (
+                            <tr key={mod.id} className="border-t" style={{ borderColor: '#F0F0F0' }}>
+                              <td className="px-2 py-1.5" style={{ color: '#1F2937' }}>{mod.name}</td>
+                              <td className="text-center px-2 py-1.5" style={{ color: '#374151' }}>{mod.caseCount}</td>
+                              <td className="text-center px-2 py-1.5" style={{ color: '#22C55E' }}>{mod.passed}</td>
+                              <td className="text-center px-2 py-1.5" style={{ color: mod.failed > 0 ? '#EF4444' : '#9CA3AF' }}>{mod.failed}</td>
+                              <td className="text-center px-2 py-1.5" style={{ color: mod.blocked > 0 ? '#F97316' : '#9CA3AF' }}>{mod.blocked}</td>
+                              <td className="text-center px-2 py-1.5" style={{ color: '#9CA3AF' }}>{mod.incomplete}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+
+                      {/* JIRA Links */}
+                      {archiveDetails.jiraLinks.length > 0 && (
+                        <div>
+                          <h4 className="text-xs font-semibold mb-2" style={{ color: '#374151' }}>
+                            JIRA 汇总
+                            <span className="ml-1 px-1.5 py-0.5 rounded text-xs" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>{archiveDetails.jiraLinks.length}</span>
+                          </h4>
+                          <div className="space-y-1 max-h-[200px] overflow-y-auto">
+                            {archiveDetails.jiraLinks.map((j: { caseName: string; jiraLink: string; testResult: string }, idx: number) => (
+                              <div key={idx} className="flex items-center gap-2 text-xs px-2 py-1 rounded" style={{ backgroundColor: '#FFF' }}>
+                                <span style={{ color: j.testResult === 'Fail' ? '#EF4444' : j.testResult === 'Block' ? '#F97316' : '#6B7280' }}>
+                                  {j.testResult === 'Fail' ? '✗' : j.testResult === 'Block' ? '⊘' : '●'}
+                                </span>
+                                <span style={{ color: '#374151' }}>{j.caseName}</span>
+                                <a href={j.jiraLink} target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: '#0073E6' }}>
+                                  {j.jiraLink.includes('browse/') ? j.jiraLink.split('browse/').pop() : 'JIRA链接'}
+                                </a>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatsPreviewModal({
   level,
   id,
@@ -3428,8 +3824,8 @@ function StatsPreviewModal({
   const displayName = data.name || name;
 
   const completionPieData = [
-    { name: 'Completed', value: summary.completed, color: CHART_COLORS.blue },
-    { name: 'Incomplete', value: summary.incomplete, color: CHART_COLORS.incomplete },
+    { name: '已完成', value: summary.completed, color: CHART_COLORS.blue },
+    { name: '未完成', value: summary.incomplete, color: CHART_COLORS.incomplete },
   ].filter(d => d.value > 0);
 
   // Sort modules
@@ -3450,10 +3846,10 @@ function StatsPreviewModal({
   const moduleBarData = data.modules
     ? data.modules.map(m => ({
         name: m.name,
-        Pass: m.total > 0 ? Math.round(m.passed / m.total * 1000) / 10 : 0,
-        Fail: m.total > 0 ? Math.round(m.failed / m.total * 1000) / 10 : 0,
-        Block: m.total > 0 ? Math.round(m.blocked / m.total * 1000) / 10 : 0,
-        Incomplete: m.total > 0 ? Math.round(m.incomplete / m.total * 1000) / 10 : 0,
+        通过: m.total > 0 ? Math.round(m.passed / m.total * 1000) / 10 : 0,
+        失败: m.total > 0 ? Math.round(m.failed / m.total * 1000) / 10 : 0,
+        阻塞: m.total > 0 ? Math.round(m.blocked / m.total * 1000) / 10 : 0,
+        未完成: m.total > 0 ? Math.round(m.incomplete / m.total * 1000) / 10 : 0,
         passCount: m.passed,
         failCount: m.failed,
         blockCount: m.blocked,
@@ -3554,20 +3950,20 @@ function StatsPreviewModal({
               </div>
               <div className="flex justify-between mt-1 text-xs" style={{ color: '#9CA3AF' }}>
                 <span>已完成 {summary.completed}</span>
-                <span>Incomplete {summary.incomplete}</span>
+                <span>未完成 {summary.incomplete}</span>
               </div>
             </div>
             <div className="rounded-lg border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FAFBFC' }}>
               <div className="flex items-center justify-between mb-2">
-                <span className="text-xs font-medium" style={{ color: '#374151' }}>Pass Rate</span>
+                <span className="text-xs font-medium" style={{ color: '#374151' }}>通过率</span>
                 <span className="text-sm font-bold" style={{ color: '#22C55E' }}>{summary.passRate}%</span>
               </div>
               <div className="w-full h-3 bg-gray-100 rounded-full overflow-hidden">
                 <div className="h-full rounded-full transition-all" style={{ width: `${summary.passRate}%`, backgroundColor: '#22C55E' }} />
               </div>
               <div className="flex justify-between mt-1 text-xs" style={{ color: '#9CA3AF' }}>
-                <span>Pass Rate {summary.completedPassRate}%</span>
-                <span>Fail {summary.failed}</span>
+                <span>通过率 {summary.completedPassRate}%</span>
+                <span>失败 {summary.failed}</span>
               </div>
             </div>
             <div className="rounded-lg border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FAFBFC' }}>
@@ -3594,10 +3990,10 @@ function StatsPreviewModal({
                 <ResponsiveContainer width="100%" height={240}>
                   <PieChart>
                     <Pie data={[
-                      { name: 'Pass', value: summary.passed, color: CHART_COLORS.passed },
-                      { name: 'Fail', value: summary.failed, color: CHART_COLORS.failed },
-                      { name: 'Block', value: summary.blocked, color: CHART_COLORS.orange },
-                      { name: 'Incomplete', value: summary.incomplete, color: CHART_COLORS.incomplete },
+                      { name: '通过', value: summary.passed, color: CHART_COLORS.passed },
+                      { name: '失败', value: summary.failed, color: CHART_COLORS.failed },
+                      { name: '阻塞', value: summary.blocked, color: CHART_COLORS.orange },
+                      { name: '未完成', value: summary.incomplete, color: CHART_COLORS.incomplete },
                     ].filter(d => d.value > 0)} cx="50%" cy="50%" outerRadius={80} innerRadius={45} dataKey="value"
                       label={(props: PieLabelProps) => { PIE_LABEL_PLACED.length = 0; return renderAntiOverlapPieLabel(props); }}
                       labelLine={false}>
@@ -3654,23 +4050,23 @@ function StatsPreviewModal({
                       <YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 11 }} interval={0} />
                       <Tooltip content={((props: { active?: boolean; payload?: Array<{ payload: Record<string, unknown> }> }) => {
                         if (!props.active || !props.payload || props.payload.length === 0) return null;
-                        const d = props.payload[0].payload as { name: string; Pass: number; Fail: number; Block: number; Incomplete: number; passCount: number; failCount: number; blockCount: number; incompleteCount: number };
+                        const d = props.payload[0].payload as { name: string; 通过: number; 失败: number; 阻塞: number; 未完成: number; passCount: number; failCount: number; blockCount: number; incompleteCount: number };
                         return (
                           <div className="bg-white border rounded-lg shadow-lg px-3 py-2 text-xs" style={{ borderColor: '#E5E7EB' }}>
                             <p className="font-semibold mb-1" style={{ color: '#1F2937' }}>{d.name}</p>
-                            <p style={{ color: '#22C55E' }}>Pass ({d.passCount}): {d.Pass}%</p>
-                            <p style={{ color: '#EF4444' }}>Fail ({d.failCount}): {d.Fail}%</p>
-                            <p style={{ color: '#F97316' }}>Block ({d.blockCount}): {d.Block}%</p>
-                            <p style={{ color: '#9CA3AF' }}>Incomplete ({d.incompleteCount}): {d.Incomplete}%</p>
+                            <p style={{ color: '#22C55E' }}>通过 ({d.passCount}): {d.通过}%</p>
+                            <p style={{ color: '#EF4444' }}>失败 ({d.failCount}): {d.失败}%</p>
+                            <p style={{ color: '#F97316' }}>阻塞 ({d.blockCount}): {d.阻塞}%</p>
+                            <p style={{ color: '#9CA3AF' }}>未完成 ({d.incompleteCount}): {d.未完成}%</p>
                           </div>
                         );
                       // eslint-disable-next-line @typescript-eslint/no-explicit-any
                       }) as any} />
                       <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
-                      <Bar dataKey="Pass" stackId="a" fill="#22C55E" barSize={16} />
-                      <Bar dataKey="Fail" stackId="a" fill="#EF4444" barSize={16} />
-                      <Bar dataKey="Block" stackId="a" fill="#F97316" barSize={16} />
-                      <Bar dataKey="Incomplete" stackId="a" fill="#9CA3AF" barSize={16} radius={[0, 4, 4, 0]} />
+                      <Bar dataKey="通过" stackId="a" fill="#22C55E" barSize={16} />
+                      <Bar dataKey="失败" stackId="a" fill="#EF4444" barSize={16} />
+                      <Bar dataKey="阻塞" stackId="a" fill="#F97316" barSize={16} />
+                      <Bar dataKey="未完成" stackId="a" fill="#9CA3AF" barSize={16} radius={[0, 4, 4, 0]} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
@@ -3681,7 +4077,7 @@ function StatsPreviewModal({
                 <div className="grid grid-cols-2 gap-4 mb-6">
                   {failedDistData.length > 0 && (
                     <div className="rounded-lg border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FAFBFC' }}>
-                      <h4 className="text-xs font-semibold mb-3" style={{ color: '#374151' }}>Fail Distribution</h4>
+                      <h4 className="text-xs font-semibold mb-3" style={{ color: '#374151' }}>失败用例分布</h4>
                       <ResponsiveContainer width="100%" height={240}>
                         <PieChart>
                           <Pie data={failedDistData} cx="50%" cy="50%" outerRadius={75} innerRadius={42} dataKey="value"
@@ -3735,7 +4131,7 @@ function StatsPreviewModal({
                             else { setSortField(field); setSortDir('desc'); }
                           }}
                         >
-                          {field === 'completionRate' ? 'Completion' : field === 'passRate' ? 'Pass Rate' : field === 'failed' ? 'Fail' : 'Block'}
+                          {field === 'completionRate' ? '完成率' : field === 'passRate' ? '通过率' : field === 'failed' ? '失败数' : '阻塞数'}
                           {sortField === field && (sortDir === 'desc' ? ' ↓' : ' ↑')}
                         </button>
                       ))}
@@ -3747,9 +4143,9 @@ function StatsPreviewModal({
                         <th className="text-left px-4 py-2 font-medium" style={{ color: '#6B7280' }}>特性名称</th>
                         <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>总数</th>
                         <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>完成率</th>
-                        <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>Pass Rate</th>
-                        <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>Fail</th>
-                        <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>Block</th>
+                        <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>通过率</th>
+                        <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>失败</th>
+                          <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>阻塞</th>
                         <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>操作</th>
                       </tr>
                     </thead>
@@ -3841,7 +4237,7 @@ function StatsPreviewModal({
                           }}
                           onClick={() => setCaseFilter(filter)}
                         >
-                          {filter === 'all' ? 'All' : filter === 'failed' ? 'Fail' : filter === 'blocked' ? 'Block' : 'Incomplete'}
+                          {filter === 'all' ? '全部' : filter === 'failed' ? '失败' : filter === 'blocked' ? '阻塞' : '未完成'}
                         </button>
                       ))}
                     </div>
@@ -3877,7 +4273,7 @@ function StatsPreviewModal({
                                   color: c.status === 'passed' ? '#16A34A' : c.status === 'failed' ? '#DC2626' : c.status === 'blocked' ? '#EA580C' : '#6B7280',
                                 }}
                               >
-                                {c.status === 'passed' ? 'Pass' : c.status === 'failed' ? 'Fail' : c.status === 'blocked' ? 'Block' : 'Incomplete'}
+                                {c.status === 'passed' ? '通过' : c.status === 'failed' ? '失败' : c.status === 'blocked' ? '阻塞' : '未完成'}
                               </span>
                             </td>
                             <td className="text-center px-3 py-2">
@@ -3966,7 +4362,7 @@ function JiraLinksSection({ jiraLinks, onNavigateCase }: {
                                 color: c.test_result === 'Pass' ? '#16A34A' : c.test_result === 'Fail' ? '#DC2626' : c.test_result === 'Block' ? '#EA580C' : '#6B7280',
                               }}
                             >
-                              {c.test_result === 'Pass' ? 'Pass' : c.test_result === 'Fail' ? 'Fail' : c.test_result === 'Block' ? 'Block' : 'Incomplete'}
+                              {c.test_result === 'Pass' ? '通过' : c.test_result === 'Fail' ? '失败' : c.test_result === 'Block' ? '阻塞' : '未完成'}
                             </span>
                             <button className="text-xs px-1.5 py-0.5 rounded hover:bg-blue-50" style={{ color: '#0073E6' }}
                               onClick={() => onNavigateCase(c.id)}

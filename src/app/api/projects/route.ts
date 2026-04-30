@@ -10,8 +10,8 @@ export async function GET() {
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
 
     const db = getDb();
-    // All projects are public now
-    const projects = db.prepare('SELECT * FROM projects ORDER BY sort_order, id').all();
+    // All projects are public now, include archive info
+    const projects = db.prepare('SELECT *, (SELECT username FROM users WHERE id = projects.user_id) as creator_name FROM projects ORDER BY is_archived ASC, sort_order, id').all();
     return NextResponse.json({ projects });
   } catch (error) {
     console.error('Get projects error:', error);

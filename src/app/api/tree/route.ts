@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const testerFilter = searchParams.get('testerId'); // filter by assigned tester
+    const archiveFilter = searchParams.get('archive'); // 'active', 'archived', or null (all)
 
     // Build a set of case IDs assigned to the tester if filtering
     let filteredCaseIds: Set<number> | null = null;
@@ -50,8 +51,15 @@ export async function GET(request: NextRequest) {
       assignmentMap.set(`${a.level}-${a.target_id}`, { userId: a.user_id, testerName: a.tester_name });
     }
 
-    // Get all projects (all are public now)
-    const projects = db.prepare('SELECT * FROM projects ORDER BY sort_order, id').all() as {
+    // Get all projects (all are public now), with archive filter
+    let projectQuery = 'SELECT * FROM projects';
+    if (archiveFilter === 'active') {
+      projectQuery += ' WHERE is_archived = 0';
+    } else if (archiveFilter === 'archived') {
+      projectQuery += ' WHERE is_archived = 1';
+    }
+    projectQuery += ' ORDER BY sort_order, id';
+    const projects = db.prepare(projectQuery).all() as {
       id: number;
       name: string;
       sort_order: number;
@@ -134,6 +142,7 @@ export async function GET(request: NextRequest) {
           testerId: moduleTester?.userId,
           testerName: moduleTester?.testerName,
           resolvedTesterNames: moduleTesterNames.length > 0 ? moduleTesterNames.join('、') : undefined,
+          isArchived: !!(project as Record<string, unknown>).is_archived,
         });
       }
 
@@ -158,6 +167,7 @@ export async function GET(request: NextRequest) {
         testerId: projectTester?.userId,
         testerName: projectTester?.testerName,
         resolvedTesterNames: projectResolvedTesterNames,
+        isArchived: !!(project as Record<string, unknown>).is_archived,
       });
     }
 
@@ -185,4 +195,5 @@ interface TreeNode {
   testerId?: number;
   testerName?: string;
   resolvedTesterNames?: string;
+  isArchived?: boolean;
 }
