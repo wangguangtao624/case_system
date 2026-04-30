@@ -101,11 +101,43 @@ interface KanbanTesterStat {
   username: string;
   total: number;
   completed: number;
+  incomplete: number;
   passed: number;
   failed: number;
   blocked: number;
   completionRate: number;
   passRate: number;
+  modules: KanbanModuleStat[];
+}
+
+interface KanbanModuleStat {
+  key: string;
+  moduleId: number;
+  moduleName: string;
+  total: number;
+  completed: number;
+  passed: number;
+  failed: number;
+  blocked: number;
+  incomplete: number;
+  completionRate: number;
+  passRate: number;
+}
+
+interface KanbanCaseStat {
+  id: number;
+  caseNo: string;
+  caseName: string;
+  moduleId: number;
+  moduleName: string;
+  testerId: number;
+  testerName: string;
+  feature: string;
+  trait: string;
+  testCategory: string;
+  priority: string;
+  testResult: string | null;
+  jiraLink: string;
 }
 
 interface KanbanProjectStat {
@@ -123,6 +155,7 @@ interface KanbanProjectStat {
   passRate: number;
   blockedRate: number;
   testers: KanbanTesterStat[];
+  cases: KanbanCaseStat[];
 }
 
 interface KanbanGanttData {
@@ -294,6 +327,43 @@ export default function DashboardPage() {
     }
     return null;
   };
+
+  const findCaseNodeByDbId = (nodes: TreeNode[], caseId: number): TreeNode | null => {
+    for (const node of nodes) {
+      if (node.type === 'case' && node.dbId === caseId) return node;
+      if (node.children) {
+        const found = findCaseNodeByDbId(node.children, caseId);
+        if (found) return found;
+      }
+    }
+    return null;
+  };
+
+  const handleOpenCaseById = useCallback(async (caseId: number) => {
+    setShowKanban(false);
+    setKanbanData(null);
+    const matchedNode = findCaseNodeByDbId(tree, caseId);
+    if (matchedNode) {
+      setSelectedNodeId(matchedNode.id);
+    }
+    try {
+      const res = await fetch(`/api/cases/${caseId}?_t=${Date.now()}`);
+      const data = await res.json();
+      if (data.case) {
+        setSelectedCase(data.case as CaseData);
+        setSelectedFiles((data.files || []) as FileData[]);
+        let permissions = data.permissions || { isManager: false, isAssignedTester: false, canEditCore: false, canEditResult: false };
+        const projectNode = tree.find(p => p.dbId === (data.case as CaseData).project_id);
+        if (projectNode?.isArchived) {
+          permissions = { ...permissions, canEditCore: false, canEditResult: false };
+        }
+        setCasePermissions(permissions);
+        setCaseTester(data.tester || null);
+      }
+    } catch (error) {
+      console.error('Load case error:', error);
+    }
+  }, [tree]);
 
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -516,6 +586,7 @@ export default function DashboardPage() {
               loading={kanbanLoading}
               isManager={isManager}
               onClose={() => { setShowKanban(false); setKanbanData(null); }}
+              onNavigateCase={handleOpenCaseById}
               onRefresh={() => {
                 setKanbanLoading(true);
                 fetch('/api/stats/kanban')
@@ -4246,27 +4317,87 @@ function GanttKanbanView({
   loading,
   isManager,
   onClose,
+  onNavigateCase,
   onRefresh,
 }: {
   data: KanbanGanttData | null;
   loading: boolean;
   isManager: boolean;
   onClose: () => void;
+  onNavigateCase: (caseId: number) => void;
   onRefresh: () => void;
 }) {
-  const [startDate, setStartDate] = useState<string>(() => {
+  const defaultStartDate = (() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
-  });
+  })();
+  const [startDate, setStartDate] = useState<string>(defaultStartDate);
   const [periodMonths, setPeriodMonths] = useState<3 | 6 | 9 | 12>(6);
-  const [granularity, setGranularity] = useState<'day' | 'week' | 'month'>('week');
+  const [granularity, setGranularity] = useState<'week' | 'month'>('week');
   const [hoveredProject, setHoveredProject] = useState<number | null>(null);
   const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
   const [editingDates, setEditingDates] = useState<{ id: number; name: string; startDate: string; endDate: string } | null>(null);
   const [savingDates, setSavingDates] = useState(false);
+  const [preferencesLoaded, setPreferencesLoaded] = useState(false);
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  const [sortByStartDate, setSortByStartDate] = useState(false);
+  const [showOnlyIncompleteModules, setShowOnlyIncompleteModules] = useState(false);
   const ganttContainerRef = useRef<HTMLDivElement>(null);
 
   const today = new Date();
+  const projects = data?.projects || [];
+  const summary = data?.summary || {
+    projectCount: 0,
+    total: 0,
+    completed: 0,
+    incomplete: 0,
+    passed: 0,
+    failed: 0,
+    blocked: 0,
+    completionRate: 0,
+    passRate: 0,
+    blockedRate: 0,
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/stats/kanban/preferences')
+      .then(res => res.json())
+      .then(result => {
+        if (cancelled) return;
+        const preferences = result?.preferences;
+        if (preferences) {
+          if (preferences.startDate) setStartDate(preferences.startDate);
+          if ([3, 6, 9, 12].includes(preferences.periodMonths)) setPeriodMonths(preferences.periodMonths);
+          if (preferences.granularity === 'week' || preferences.granularity === 'month') {
+            setGranularity(preferences.granularity);
+          } else if (preferences.granularity === 'day') {
+            setGranularity('week');
+          }
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setPreferencesLoaded(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!preferencesLoaded) return;
+    const timer = window.setTimeout(() => {
+      fetch('/api/stats/kanban/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ startDate, periodMonths, granularity }),
+      }).catch(() => {});
+    }, 300);
+
+    return () => window.clearTimeout(timer);
+  }, [startDate, periodMonths, granularity, preferencesLoaded]);
 
   const viewStartDate = new Date(startDate);
   const viewEndDate = new Date(viewStartDate);
@@ -4285,10 +4416,8 @@ function GanttKanbanView({
     return (today.getTime() - viewStartDate.getTime()) / (1000 * 60 * 60 * 24);
   };
 
-  const formatHeaderDate = (date: Date, gran: 'day' | 'week' | 'month') => {
-    if (gran === 'day') {
-      return `${date.getMonth() + 1}/${date.getDate()}`;
-    } else if (gran === 'week') {
+  const formatHeaderDate = (date: Date, gran: 'week' | 'month') => {
+    if (gran === 'week') {
       return `${date.getMonth() + 1}/${date.getDate()}`;
     } else {
       return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
@@ -4297,13 +4426,7 @@ function GanttKanbanView({
 
   const generateTimeHeaders = () => {
     const headers: { label: string; width: number; date: Date }[] = [];
-    if (granularity === 'day') {
-      for (let i = 0; i < totalDays; i++) {
-        const d = new Date(viewStartDate);
-        d.setDate(d.getDate() + i);
-        headers.push({ label: formatHeaderDate(d, 'day'), width: 1, date: d });
-      }
-    } else if (granularity === 'week') {
+    if (granularity === 'week') {
       let weekStart = new Date(viewStartDate);
       while (weekStart < viewEndDate) {
         const weekEnd = new Date(weekStart);
@@ -4329,9 +4452,62 @@ function GanttKanbanView({
 
   const timeHeaders = generateTimeHeaders();
   const totalWidthUnits = timeHeaders.reduce((sum, h) => sum + h.width, 0);
-  const PX_PER_DAY = granularity === 'day' ? 30 : granularity === 'week' ? 12 : 6;
+  const PX_PER_DAY = granularity === 'week' ? 12 : 6;
   const totalWidth = totalWidthUnits * PX_PER_DAY;
   const todayOffset = getTodayOffset();
+
+  const parseDateOrMax = (dateStr: string | null) => {
+    if (!dateStr) return Number.MAX_SAFE_INTEGER;
+    const value = new Date(dateStr).getTime();
+    return Number.isNaN(value) ? Number.MAX_SAFE_INTEGER : value;
+  };
+
+  const orderedProjects = [...projects].sort((a, b) => {
+    if (!sortByStartDate) return 0;
+    const startDiff = parseDateOrMax(a.startDate) - parseDateOrMax(b.startDate);
+    if (startDiff !== 0) return startDiff;
+    return a.name.localeCompare(b.name, 'zh-CN');
+  });
+
+  useEffect(() => {
+    if (orderedProjects.length === 0) {
+      setSelectedProjectId(null);
+      return;
+    }
+    if (!selectedProjectId || !orderedProjects.some(project => project.id === selectedProjectId)) {
+      setSelectedProjectId(orderedProjects[0].id);
+    }
+  }, [orderedProjects, selectedProjectId]);
+
+  const selectedProject = orderedProjects.find(project => project.id === selectedProjectId) || null;
+
+  const getModuleTooltipText = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat) => (
+    `${tester.username} / ${moduleStat.moduleName}
+完成 ${moduleStat.completed}/${moduleStat.total}
+通过 ${moduleStat.passed}  失败 ${moduleStat.failed}  阻塞 ${moduleStat.blocked}  未完成 ${moduleStat.incomplete}`
+  );
+
+  const getVisibleModules = (tester: KanbanTesterStat) => {
+    const modules = showOnlyIncompleteModules
+      ? tester.modules.filter(moduleStat => moduleStat.incomplete > 0)
+      : tester.modules;
+    return modules;
+  };
+
+  const refreshBoardView = () => {
+    const startTimes = projects
+      .map(project => project.startDate ? new Date(project.startDate).getTime() : NaN)
+      .filter(value => !Number.isNaN(value));
+    const baseTime = startTimes.length > 0 ? Math.min(...startTimes) : Date.now();
+    const anchorDate = new Date(baseTime);
+    anchorDate.setDate(anchorDate.getDate() - 7);
+    const normalized = `${anchorDate.getFullYear()}-${String(anchorDate.getMonth() + 1).padStart(2, '0')}-${String(anchorDate.getDate()).padStart(2, '0')}`;
+    setStartDate(normalized);
+    setPeriodMonths(9);
+    setGranularity('month');
+    setSortByStartDate(true);
+    onRefresh();
+  };
 
   const handleSaveDates = async () => {
     if (!editingDates) return;
@@ -4373,8 +4549,6 @@ function GanttKanbanView({
 
   if (!data) return null;
 
-  const { projects, summary } = data;
-
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -4398,18 +4572,8 @@ function GanttKanbanView({
         </button>
       </div>
 
-      {/* Summary Cards */}
-      <div className="grid grid-cols-6 gap-3 px-6 py-3 border-b" style={{ borderColor: '#EEEEEE' }}>
-        <StatCard label="总用例" value={summary.total} color="#0073E6" />
-        <StatCard label="已完成" value={summary.completed} subtext={`${summary.completionRate}%`} color="#22C55E" />
-        <StatCard label="通过" value={summary.passed} subtext={`${summary.passRate}%`} color="#10B981" />
-        <StatCard label="失败" value={summary.failed} color="#EF4444" />
-        <StatCard label="阻塞" value={summary.blocked} color="#F97316" />
-        <StatCard label="未完成" value={summary.incomplete} color="#9CA3AF" />
-      </div>
-
       {/* Controls */}
-      <div className="flex items-center gap-4 px-6 py-2 border-b" style={{ borderColor: '#EEEEEE', backgroundColor: '#FAFBFC' }}>
+      <div className="flex flex-wrap items-center gap-4 px-6 py-2 border-b" style={{ borderColor: '#EEEEEE', backgroundColor: '#FAFBFC' }}>
         <div className="flex items-center gap-2">
           <label className="text-xs font-medium" style={{ color: '#374151' }}>起始日期</label>
           <input
@@ -4442,13 +4606,12 @@ function GanttKanbanView({
           <label className="text-xs font-medium" style={{ color: '#374151' }}>时间粒度</label>
           <div className="flex items-center rounded border overflow-hidden" style={{ borderColor: '#D1D5DB' }}>
             {[
-              { key: 'day', label: '天' },
               { key: 'week', label: '周' },
               { key: 'month', label: '月' },
             ].map(g => (
               <button
                 key={g.key}
-                onClick={() => setGranularity(g.key as 'day' | 'week' | 'month')}
+                onClick={() => setGranularity(g.key as 'week' | 'month')}
                 className="text-xs px-2.5 py-1 transition-colors"
                 style={{
                   backgroundColor: granularity === g.key ? '#0073E6' : '#FFF',
@@ -4460,15 +4623,25 @@ function GanttKanbanView({
             ))}
           </div>
         </div>
+        <button
+          onClick={refreshBoardView}
+          className="text-xs px-2.5 py-1 rounded border hover:bg-gray-50"
+          style={{ borderColor: '#D1D5DB', color: '#374151' }}
+        >
+          刷新视图
+        </button>
+        <span className="text-xs" style={{ color: preferencesLoaded ? '#6B7280' : '#9CA3AF' }}>
+          {preferencesLoaded ? '已按登录用户记住你的看板偏好' : '正在读取你的看板偏好...'}
+        </span>
       </div>
 
       {/* Gantt Chart */}
       <div className="flex-1 overflow-auto px-6 py-4" ref={ganttContainerRef}>
-        <div style={{ minWidth: totalWidth + 200 }}>
+        <div style={{ minWidth: totalWidth + 260 }}>
           {/* Time Header Row */}
           <div className="flex" style={{ borderBottom: '1px solid #E5E7EB' }}>
-            <div className="flex-shrink-0" style={{ width: '200px' }}>
-              <div className="text-xs font-semibold px-3 py-2" style={{ color: '#374151', backgroundColor: '#F9FAFB' }}>项目名称</div>
+            <div className="flex-shrink-0" style={{ width: '260px' }}>
+              <div className="text-sm font-semibold px-4 py-3" style={{ color: '#374151', backgroundColor: '#F9FAFB' }}>项目名称</div>
             </div>
             <div className="flex-1 flex" style={{ position: 'relative' }}>
               {timeHeaders.map((h, i) => (
@@ -4492,17 +4665,44 @@ function GanttKanbanView({
           </div>
 
           {/* Project Rows */}
-          {projects.map(project => {
+          {orderedProjects.map(project => {
             const startOffset = getDateOffset(project.startDate);
             const endOffset = getDateOffset(project.endDate);
-            const barLeft = startOffset !== null ? startOffset * PX_PER_DAY : 0;
-            const barWidth = (startOffset !== null && endOffset !== null) ? (endOffset - startOffset) * PX_PER_DAY : 0;
+            const visibleStartOffset = startOffset === null ? null : Math.max(startOffset, 0);
+            const visibleEndOffset = endOffset === null ? null : Math.min(endOffset, totalDays);
+            const hasVisibleBar = visibleStartOffset !== null
+              && visibleEndOffset !== null
+              && visibleEndOffset > visibleStartOffset
+              && endOffset !== null
+              && startOffset !== null
+              && endOffset > 0
+              && startOffset < totalDays;
+            const barLeft = hasVisibleBar ? visibleStartOffset * PX_PER_DAY : 0;
+            const barWidth = hasVisibleBar ? (visibleEndOffset - visibleStartOffset) * PX_PER_DAY : 0;
+            const testerNames = project.testers.map(tester => tester.username).join('、') || '暂无执行者';
 
             return (
-              <div key={project.id} className="flex items-stretch" style={{ borderBottom: '1px solid #F3F4F6', minHeight: '44px' }}>
+              <div
+                key={project.id}
+                className="flex items-stretch"
+                style={{
+                  borderBottom: '1px solid #F3F4F6',
+                  minHeight: '68px',
+                  backgroundColor: selectedProjectId === project.id ? '#F8FBFF' : '#FFFFFF',
+                }}
+              >
                 {/* Project Name */}
-                <div className="flex-shrink-0 flex items-center gap-1 px-3" style={{ width: '200px' }}>
-                  <span className="text-xs font-medium truncate" style={{ color: '#1F2937' }}>{project.name}</span>
+                <div className="flex-shrink-0 flex items-center gap-2 px-4" style={{ width: '260px' }}>
+                  <button
+                    onClick={() => setSelectedProjectId(project.id)}
+                    className="text-left min-w-0"
+                    style={{ width: '100%' }}
+                  >
+                    <div className="text-sm font-semibold truncate" style={{ color: '#1F2937' }}>{project.name}</div>
+                    <div className="text-[11px] mt-1 leading-5" style={{ color: '#6B7280' }}>
+                      {testerNames}
+                    </div>
+                  </button>
                   {isManager && (
                     <button
                       onClick={() => setEditingDates({
@@ -4525,13 +4725,13 @@ function GanttKanbanView({
                   style={{ position: 'relative' }}
                   onMouseEnter={(e) => {
                     setHoveredProject(project.id);
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    setTooltipPos({ x: rect.left + barLeft + barWidth / 2, y: rect.bottom });
+                    setTooltipPos({ x: e.clientX + 12, y: e.clientY + 12 });
                   }}
                   onMouseLeave={() => {
                     setHoveredProject(null);
                     setTooltipPos(null);
                   }}
+                  onClick={() => setSelectedProjectId(project.id)}
                 >
                   {/* Grid lines */}
                   {timeHeaders.map((h, i) => (
@@ -4559,14 +4759,14 @@ function GanttKanbanView({
                   )}
 
                   {/* Project Bar */}
-                  {barWidth > 0 && (
+                  {hasVisibleBar && (
                     <div
                       className="absolute rounded"
                       style={{
                         left: `${(barLeft / totalWidth) * 100}%`,
                         width: `${(barWidth / totalWidth) * 100}%`,
-                        top: '8px',
-                        height: '28px',
+                        top: '14px',
+                        height: '34px',
                         backgroundColor: '#E6F2FF',
                         border: '1px solid #0073E6',
                         zIndex: 3,
@@ -4595,7 +4795,9 @@ function GanttKanbanView({
                   {/* No date set indicator */}
                   {barWidth <= 0 && (
                     <div className="absolute inset-0 flex items-center">
-                      <span className="text-xs" style={{ color: '#D1D5DB', paddingLeft: '8px' }}>未设置日期</span>
+                      <span className="text-xs" style={{ color: '#D1D5DB', paddingLeft: '8px' }}>
+                        {project.startDate && project.endDate ? '当前时间窗未覆盖该项目' : '未设置日期'}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -4603,12 +4805,139 @@ function GanttKanbanView({
             );
           })}
 
-          {projects.length === 0 && (
+          {orderedProjects.length === 0 && (
             <div className="text-center py-12 text-sm" style={{ color: '#9CA3AF' }}>
               暂无进行中的项目
             </div>
           )}
         </div>
+
+        {selectedProject && (
+          <div className="mt-6 rounded-xl border overflow-hidden" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' }}>
+            <div className="px-5 py-4 border-b" style={{ borderColor: '#E5E7EB', backgroundColor: '#FAFBFC' }}>
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>{selectedProject.name}</h3>
+                    <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#F0F7FF', color: '#0073E6' }}>
+                      {selectedProject.testers.length} 位执行者
+                    </span>
+                  </div>
+                  <div className="text-xs mt-1" style={{ color: '#6B7280' }}>
+                    {selectedProject.startDate && selectedProject.endDate
+                      ? `${selectedProject.startDate} ~ ${selectedProject.endDate}`
+                      : '项目日期尚未设置'}
+                  </div>
+                  <div className="flex flex-wrap gap-2 mt-3">
+                    {selectedProject.testers.map(tester => (
+                      <span
+                        key={tester.userId}
+                        className="text-xs px-2 py-1 rounded-full"
+                        style={{ backgroundColor: '#F3F4F6', color: '#374151' }}
+                      >
+                        {tester.username}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#F0FFF4', color: '#16A34A' }}>
+                    完成 {selectedProject.completed}/{selectedProject.total}
+                  </span>
+                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
+                    失败 {selectedProject.failed}
+                  </span>
+                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#FFF7ED', color: '#EA580C' }}>
+                    阻塞 {selectedProject.blocked}
+                  </span>
+                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#F3F4F6', color: '#6B7280' }}>
+                    未完成 {selectedProject.incomplete}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div className="px-5 py-4 border-b" style={{ borderColor: '#E5E7EB' }}>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>执行者与二级目录进度</h4>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setShowOnlyIncompleteModules(value => !value)}
+                    className="text-xs px-3 py-1.5 rounded border hover:bg-gray-50"
+                    style={{ borderColor: '#D1D5DB', color: '#374151' }}
+                  >
+                    {showOnlyIncompleteModules ? '查看全部目录' : '一键查看未完成目录'}
+                  </button>
+                  <span className="text-xs" style={{ color: '#6B7280' }}>
+                    鼠标悬停目录进度条可查看完成数与状态分布
+                  </span>
+                </div>
+              </div>
+              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                {selectedProject.testers.map(tester => (
+                  <div key={tester.userId} className="rounded-lg border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FCFCFD' }}>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div>
+                        <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>{tester.username}</div>
+                        <div className="text-xs mt-0.5" style={{ color: '#6B7280' }}>
+                          {tester.completed}/{tester.total} 已完成，失败 {tester.failed}，阻塞 {tester.blocked}
+                        </div>
+                      </div>
+                      <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: '#F0F7FF', color: '#0073E6' }}>
+                        总进度 {tester.completionRate}%
+                      </span>
+                    </div>
+                    <div className="h-3 rounded-full overflow-hidden mb-3" style={{ backgroundColor: '#E5E7EB' }}>
+                      <div
+                        className="h-full rounded-full"
+                        style={{
+                          width: `${tester.completionRate}%`,
+                          backgroundColor: tester.completionRate >= 80 ? '#22C55E' : tester.completionRate >= 50 ? '#F97316' : '#EF4444',
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-2 max-h-[260px] overflow-auto pr-1">
+                      {getVisibleModules(tester).length > 0 ? getVisibleModules(tester).map(moduleStat => (
+                        <div key={`${tester.userId}-${moduleStat.key}`} className="rounded border px-3 py-2" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFF' }}>
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <div className="min-w-0">
+                              <div className="text-xs font-medium truncate" style={{ color: '#1F2937' }}>
+                                {moduleStat.moduleName}
+                              </div>
+                              <div className="text-[11px] mt-0.5" style={{ color: '#6B7280' }}>
+                                {moduleStat.completed}/{moduleStat.total} 已完成，失败 {moduleStat.failed}，阻塞 {moduleStat.blocked}，未完成 {moduleStat.incomplete}
+                              </div>
+                            </div>
+                            <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#F0F7FF', color: '#0073E6' }}>
+                              {moduleStat.completionRate}%
+                            </span>
+                          </div>
+                          <div
+                            className="h-2.5 rounded-full overflow-hidden"
+                            style={{ backgroundColor: '#E5E7EB' }}
+                            title={getModuleTooltipText(tester, moduleStat)}
+                          >
+                            <div
+                              className="h-full rounded-full"
+                              style={{
+                                width: `${moduleStat.completionRate}%`,
+                                backgroundColor: moduleStat.incomplete > 0 ? '#F97316' : moduleStat.failed > 0 ? '#EF4444' : '#22C55E',
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )) : (
+                        <div className="text-xs" style={{ color: '#9CA3AF' }}>
+                          {showOnlyIncompleteModules ? '该执行者当前没有未完成目录' : '该执行者暂无用例'}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Hover Tooltip */}
@@ -4619,10 +4948,10 @@ function GanttKanbanView({
           <div
             className="fixed z-[100] bg-white rounded-lg shadow-xl border p-4"
             style={{
-              left: `${Math.min(tooltipPos.x, window.innerWidth - 320)}px`,
-              top: `${tooltipPos.y + 4}px`,
-              minWidth: '280px',
-              maxWidth: '360px',
+              left: `${Math.min(tooltipPos.x, window.innerWidth - 420)}px`,
+              top: `${Math.min(tooltipPos.y, window.innerHeight - 360)}px`,
+              minWidth: '320px',
+              maxWidth: '420px',
               borderColor: '#E5E7EB',
             }}
           >
@@ -4635,12 +4964,6 @@ function GanttKanbanView({
                 {project.completionRate}%
               </span>
             </div>
-            <div className="grid grid-cols-4 gap-2 text-xs mb-2" style={{ color: '#6B7280' }}>
-              <div>总用例 <b style={{ color: '#333' }}>{project.total}</b></div>
-              <div>通过 <b style={{ color: '#22C55E' }}>{project.passed}</b></div>
-              <div>失败 <b style={{ color: '#EF4444' }}>{project.failed}</b></div>
-              <div>阻塞 <b style={{ color: '#F97316' }}>{project.blocked}</b></div>
-            </div>
             {project.startDate && project.endDate && (
               <div className="text-xs mb-2" style={{ color: '#6B7280' }}>
                 {project.startDate} ~ {project.endDate}
@@ -4651,18 +4974,43 @@ function GanttKanbanView({
                 <div className="text-xs font-semibold mb-1.5" style={{ color: '#374151' }}>执行者进度</div>
                 <div className="space-y-1.5">
                   {project.testers.map(tester => (
-                    <div key={tester.userId} className="flex items-center gap-2">
-                      <span className="text-xs flex-shrink-0" style={{ color: '#374151', width: '56px' }}>{tester.username}</span>
-                      <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className="h-full rounded-full"
-                          style={{
-                            width: `${tester.completionRate}%`,
-                            backgroundColor: tester.completionRate >= 80 ? '#22C55E' : tester.completionRate >= 50 ? '#F97316' : '#EF4444',
-                          }}
-                        />
+                    <div key={tester.userId} className="rounded border px-2 py-2" style={{ borderColor: '#F3F4F6' }}>
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs flex-shrink-0" style={{ color: '#374151', width: '56px' }}>{tester.username}</span>
+                        <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full rounded-full"
+                            style={{
+                              width: `${tester.completionRate}%`,
+                              backgroundColor: tester.completionRate >= 80 ? '#22C55E' : tester.completionRate >= 50 ? '#F97316' : '#EF4444',
+                            }}
+                          />
+                        </div>
+                        <span className="text-xs flex-shrink-0" style={{ color: '#6B7280', width: '36px', textAlign: 'right' }}>{tester.completionRate}%</span>
                       </div>
-                      <span className="text-xs flex-shrink-0" style={{ color: '#6B7280', width: '36px', textAlign: 'right' }}>{tester.completionRate}%</span>
+                      {tester.modules.length > 0 && (
+                        <div className="mt-1.5 space-y-1">
+                          {tester.modules.slice(0, 3).map(moduleStat => (
+                            <div key={`${tester.userId}-${moduleStat.key}`} className="flex items-center gap-2">
+                              <span className="text-[11px] truncate flex-shrink-0" style={{ color: '#6B7280', width: '132px' }}>
+                                {moduleStat.moduleName}
+                              </span>
+                              <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ backgroundColor: '#E5E7EB' }}>
+                                <div
+                                  className="h-full rounded-full"
+                                  style={{
+                                    width: `${moduleStat.completionRate}%`,
+                                    backgroundColor: moduleStat.incomplete > 0 ? '#F97316' : moduleStat.failed > 0 ? '#EF4444' : '#22C55E',
+                                  }}
+                                />
+                              </div>
+                              <span className="text-[11px]" style={{ color: '#6B7280', width: '52px', textAlign: 'right' }}>
+                                {moduleStat.completed}/{moduleStat.total}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
