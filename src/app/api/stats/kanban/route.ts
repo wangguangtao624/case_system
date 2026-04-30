@@ -10,8 +10,8 @@ export async function GET() {
     const db = getDb();
 
     const activeProjects = db.prepare(`
-      SELECT p.id, p.name FROM projects p WHERE p.is_archived = 0 ORDER BY p.sort_order, p.id
-    `).all() as { id: number; name: string }[];
+      SELECT p.id, p.name, p.start_date, p.end_date FROM projects p WHERE p.is_archived = 0 ORDER BY p.sort_order, p.id
+    `).all() as { id: number; name: string; start_date: string | null; end_date: string | null }[];
 
     const assignments = db.prepare(`
       SELECT a.level, a.target_id, a.user_id, u.username as tester_name
@@ -89,6 +89,8 @@ export async function GET() {
       projectStats.push({
         id: project.id,
         name: project.name,
+        startDate: project.start_date,
+        endDate: project.end_date,
         total: projectTotal,
         completed: projectCompleted,
         incomplete: projectIncomplete,

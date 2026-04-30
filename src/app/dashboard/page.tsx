@@ -96,6 +96,52 @@ interface CaseTester {
   assignmentLevel: string;
 }
 
+interface KanbanTesterStat {
+  userId: number;
+  username: string;
+  total: number;
+  completed: number;
+  passed: number;
+  failed: number;
+  blocked: number;
+  completionRate: number;
+  passRate: number;
+}
+
+interface KanbanProjectStat {
+  id: number;
+  name: string;
+  startDate: string | null;
+  endDate: string | null;
+  total: number;
+  completed: number;
+  incomplete: number;
+  passed: number;
+  failed: number;
+  blocked: number;
+  completionRate: number;
+  passRate: number;
+  blockedRate: number;
+  testers: KanbanTesterStat[];
+}
+
+interface KanbanGanttData {
+  projects: KanbanProjectStat[];
+  summary: {
+    projectCount: number;
+    total: number;
+    completed: number;
+    incomplete: number;
+    passed: number;
+    failed: number;
+    blocked: number;
+    completionRate: number;
+    passRate: number;
+    blockedRate: number;
+  };
+  allUsers: Array<{ id: number; username: string }>;
+}
+
 // ============ Main Dashboard ============
 export default function DashboardPage() {
   const router = useRouter();
@@ -115,12 +161,12 @@ export default function DashboardPage() {
   const [allUsers, setAllUsers] = useState<UserItem[]>([]);
   const [testerFilter, setTesterFilter] = useState<string>(''); // '' = all, 'my' = my tasks, user_id = specific
   const [projectFilter, setProjectFilter] = useState<string>('active'); // 'active', 'archived', 'all'
-  const [showArchiveSpace, setShowArchiveSpace] = useState(false);
   const [archiveDialog, setArchiveDialog] = useState<{ projectId: number; projectName: string } | null>(null);
   const [archiveNote, setArchiveNote] = useState('');
   const [archiving, setArchiving] = useState(false);
   const [showKanban, setShowKanban] = useState(false);
-
+  const [kanbanData, setKanbanData] = useState<KanbanGanttData | null>(null);
+  const [kanbanLoading, setKanbanLoading] = useState(false);
   // Dialogs
   const [showUserMgmt, setShowUserMgmt] = useState(false);
   const [showChangePwd, setShowChangePwd] = useState(false);
@@ -216,6 +262,8 @@ export default function DashboardPage() {
   const [caseTester, setCaseTester] = useState<CaseTester | null>(null);
 
   const handleSelectCase = useCallback(async (node: TreeNode) => {
+    setShowKanban(false);
+    setKanbanData(null);
     setSelectedNodeId(node.id);
     try {
       const res = await fetch(`/api/cases/${node.dbId}?_t=${Date.now()}`);
@@ -299,33 +347,11 @@ export default function DashboardPage() {
       const data = await res.json();
       if (data.success) {
         loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
-        if (showArchiveSpace) {
-          setShowArchiveSpace(false);
-        }
       } else {
         alert(data.error || '删除失败');
       }
     } catch {
       alert('删除失败');
-    }
-  };
-
-  const handleExportForArchive = async (projectId: number, projectName: string) => {
-    try {
-      const res = await fetch(`/api/cases/export?projectId=${projectId}`);
-      if (!res.ok) {
-        alert('导出失败');
-        return;
-      }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${projectName}.xlsx`;
-      link.click();
-      window.URL.revokeObjectURL(url);
-    } catch {
-      alert('导出失败，请稍后重试');
     }
   };
 
@@ -424,8 +450,19 @@ export default function DashboardPage() {
               projectFilter={projectFilter}
               onProjectFilterChange={handleProjectFilterChange}
               onArchive={(projectId, projectName) => setArchiveDialog({ projectId, projectName })}
-              onOpenArchiveSpace={() => setShowArchiveSpace(true)}
-              onOpenKanban={() => setShowKanban(true)}
+              onOpenKanban={() => {
+                setSelectedCase(null);
+                setSelectedNodeId(null);
+                setShowKanban(true);
+                setKanbanLoading(true);
+                fetch('/api/stats/kanban')
+                  .then(r => r.json())
+                  .then(d => {
+                    setKanbanData(d);
+                    setKanbanLoading(false);
+                  })
+                  .catch(() => setKanbanLoading(false));
+              }}
               onDeleteArchived={handleDeleteArchived}
             />
           )}
@@ -473,7 +510,21 @@ export default function DashboardPage() {
 
         {/* Content Area */}
         <main className="flex-1 overflow-auto" style={{ backgroundColor: '#FFFFFF' }}>
-          {selectedCase ? (
+          {showKanban ? (
+            <GanttKanbanView
+              data={kanbanData}
+              loading={kanbanLoading}
+              isManager={isManager}
+              onClose={() => { setShowKanban(false); setKanbanData(null); }}
+              onRefresh={() => {
+                setKanbanLoading(true);
+                fetch('/api/stats/kanban')
+                  .then(r => r.json())
+                  .then(d => { setKanbanData(d); setKanbanLoading(false); })
+                  .catch(() => setKanbanLoading(false));
+              }}
+            />
+          ) : selectedCase ? (
             <CaseDetail
               caseData={selectedCase}
               files={selectedFiles}
@@ -630,19 +681,6 @@ export default function DashboardPage() {
       )}
 
       {/* Archive Space Dialog */}
-      {showArchiveSpace && (
-        <ArchiveSpaceDialog
-          onClose={() => setShowArchiveSpace(false)}
-          onDeleteArchived={handleDeleteArchived}
-          onPreview={(level: 'project' | 'module', id: number, name: string) => { setShowArchiveSpace(false); setStatsPreview({ level, id, name }); }}
-          onExport={(projectId: number, name: string) => handleExportForArchive(projectId, name)}
-        />
-      )}
-
-      {/* Kanban Navigation */}
-      {showKanban && (
-        (() => { window.location.href = '/kanban'; return null; })()
-      )}
     </div>
   );
 }
@@ -666,7 +704,6 @@ function SidebarTree({
   projectFilter,
   onProjectFilterChange,
   onArchive,
-  onOpenArchiveSpace,
   onOpenKanban,
   onDeleteArchived,
 }: {
@@ -687,7 +724,6 @@ function SidebarTree({
   projectFilter: string;
   onProjectFilterChange: (value: string) => void;
   onArchive: (projectId: number, projectName: string) => void;
-  onOpenArchiveSpace: () => void;
   onOpenKanban: () => void;
   onDeleteArchived: (projectId: number) => Promise<void> | void;
 }) {
@@ -1174,21 +1210,13 @@ function SidebarTree({
           {projectFilter === 'active' && (
             <button
               onClick={onOpenKanban}
-              className="flex-1 text-xs px-2 py-1.5 rounded border hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"
+              className="w-full text-xs px-2 py-1.5 rounded border hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"
               style={{ borderColor: '#0073E6', color: '#0073E6' }}
             >
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
               项目看板
             </button>
           )}
-          <button
-            onClick={onOpenArchiveSpace}
-            className="flex-1 text-xs px-2 py-1.5 rounded border hover:bg-gray-50 transition-colors flex items-center justify-center gap-1"
-            style={{ borderColor: '#D1D5DB', color: '#6B7280' }}
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 8v13H3V8" /><path d="M1 3h22v5H1z" /><path d="M10 12h4" /></svg>
-            归档空间
-          </button>
         </div>
       </div>
 
@@ -3552,187 +3580,6 @@ interface CaseStat {
   status: 'passed' | 'failed' | 'blocked' | 'incomplete';
 }
 
-function ArchiveSpaceDialog({
-  onClose,
-  onDeleteArchived,
-  onPreview,
-  onExport,
-}: {
-  onClose: () => void;
-  onDeleteArchived: (projectId: number) => Promise<void> | void;
-  onPreview: (level: 'project' | 'module', id: number, name: string) => void;
-  onExport: (projectId: number, name: string) => void;
-}) {
-  const [archives, setArchives] = useState<Array<{
-    id: number; name: string; archive_note: string; archived_at: string;
-    archived_by: string; creator_name: string;
-  }>>([]);
-  const [loading, setLoading] = useState(true);
-  const [expandedId, setExpandedId] = useState<number | null>(null);
-  const [archiveDetails, setArchiveDetails] = useState<{
-    modules: Array<{ id: number; name: string; caseCount: number; passed: number; failed: number; blocked: number; incomplete: number }>;
-    jiraLinks: Array<{ caseName: string; jiraLink: string; testResult: string }>;
-  } | null>(null);
-
-  useEffect(() => {
-    fetch('/api/archives?status=archived').then(r => r.json()).then(data => {
-      setArchives(data.projects || []);
-      setLoading(false);
-    }).catch(() => setLoading(false));
-  }, []);
-
-  const loadArchiveDetails = async (projectId: number) => {
-    if (expandedId === projectId) { setExpandedId(null); setArchiveDetails(null); return; }
-    setExpandedId(projectId);
-    try {
-      const res = await fetch(`/api/stats/preview?level=project&id=${projectId}`);
-      const data = await res.json();
-      const modules = (data.modules || []).map((m: Record<string, unknown>) => ({
-        id: m.id, name: m.name,
-        caseCount: (m.summary as Record<string, number>)?.total || 0,
-        passed: (m.summary as Record<string, number>)?.passed || 0,
-        failed: (m.summary as Record<string, number>)?.failed || 0,
-        blocked: (m.summary as Record<string, number>)?.blocked || 0,
-        incomplete: (m.summary as Record<string, number>)?.incomplete || 0,
-      }));
-      const jiraLinks = (data.jiraLinks || []).filter((j: Record<string, unknown>) => j.jiraLink);
-      setArchiveDetails({ modules, jiraLinks });
-    } catch { setArchiveDetails(null); }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}>
-      <div className="bg-white rounded-xl shadow-2xl w-[700px] max-h-[85vh] overflow-hidden flex flex-col">
-        <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: '#EEEEEE' }}>
-          <div className="flex items-center gap-2">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2"><path d="M21 8v13H3V8" /><path d="M1 3h22v5H1z" /><path d="M10 12h4" /></svg>
-            <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>归档空间</h3>
-            <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEF3C7', color: '#92400E' }}>{archives.length} 个已归档</span>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto px-6 py-4">
-          {loading ? (
-            <div className="text-center py-8 text-sm" style={{ color: '#9CA3AF' }}>加载中...</div>
-          ) : archives.length === 0 ? (
-            <div className="text-center py-8 text-sm" style={{ color: '#9CA3AF' }}>暂无归档项目</div>
-          ) : (
-            <div className="space-y-3">
-              {archives.map((archive) => (
-                <div key={archive.id} className="border rounded-lg overflow-hidden" style={{ borderColor: '#E5E7EB' }}>
-                  <div
-                    className="flex items-center justify-between px-4 py-3 cursor-pointer hover:bg-gray-50"
-                    onClick={() => loadArchiveDetails(archive.id)}
-                  >
-                    <div className="flex items-center gap-3">
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2" style={{ transform: expandedId === archive.id ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}>
-                        <polyline points="9 18 15 12 9 6" />
-                      </svg>
-                      <span className="font-medium text-sm" style={{ color: '#1F2937' }}>{archive.name}</span>
-                      <span className="text-xs" style={{ color: '#9CA3AF' }}>归档于 {archive.archived_at}</span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onPreview('project', archive.id, archive.name); }}
-                        className="text-xs px-2 py-1 rounded hover:bg-blue-50"
-                        style={{ color: '#0073E6' }}
-                      >
-                        查看进度
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onExport(archive.id, archive.name); }}
-                        className="text-xs px-2 py-1 rounded hover:bg-green-50"
-                        style={{ color: '#10B981' }}
-                      >
-                        导出
-                      </button>
-                      <button
-                        onClick={(e) => { e.stopPropagation(); onDeleteArchived(archive.id); }}
-                        className="text-xs px-2 py-1 rounded hover:bg-red-50"
-                        style={{ color: '#EF4444' }}
-                      >
-                        删除
-                      </button>
-                    </div>
-                  </div>
-
-                  {expandedId === archive.id && archiveDetails && (
-                    <div className="px-4 py-3 border-t" style={{ borderColor: '#F3F4F6', backgroundColor: '#FAFAFA' }}>
-                      {archive.archive_note && (
-                        <div className="mb-3">
-                          <span className="text-xs font-medium" style={{ color: '#6B7280' }}>归档备注：</span>
-                          <span className="text-xs" style={{ color: '#374151' }}>{archive.archive_note}</span>
-                        </div>
-                      )}
-                      <div className="mb-3">
-                        <span className="text-xs font-medium" style={{ color: '#6B7280' }}>归档人：</span>
-                        <span className="text-xs" style={{ color: '#374151' }}>{archive.archived_by}</span>
-                      </div>
-
-                      {/* Module Stats */}
-                      <h4 className="text-xs font-semibold mb-2" style={{ color: '#374151' }}>模块统计</h4>
-                      <table className="w-full text-xs mb-3">
-                        <thead>
-                          <tr style={{ backgroundColor: '#F0F0F0' }}>
-                            <th className="text-left px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>模块</th>
-                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>总数</th>
-                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>通过</th>
-                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>失败</th>
-                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>阻塞</th>
-                            <th className="text-center px-2 py-1.5 font-medium" style={{ color: '#6B7280' }}>未完成</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {archiveDetails.modules.map((mod) => (
-                            <tr key={mod.id} className="border-t" style={{ borderColor: '#F0F0F0' }}>
-                              <td className="px-2 py-1.5" style={{ color: '#1F2937' }}>{mod.name}</td>
-                              <td className="text-center px-2 py-1.5" style={{ color: '#374151' }}>{mod.caseCount}</td>
-                              <td className="text-center px-2 py-1.5" style={{ color: '#22C55E' }}>{mod.passed}</td>
-                              <td className="text-center px-2 py-1.5" style={{ color: mod.failed > 0 ? '#EF4444' : '#9CA3AF' }}>{mod.failed}</td>
-                              <td className="text-center px-2 py-1.5" style={{ color: mod.blocked > 0 ? '#F97316' : '#9CA3AF' }}>{mod.blocked}</td>
-                              <td className="text-center px-2 py-1.5" style={{ color: '#9CA3AF' }}>{mod.incomplete}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-
-                      {/* JIRA Links */}
-                      {archiveDetails.jiraLinks.length > 0 && (
-                        <div>
-                          <h4 className="text-xs font-semibold mb-2" style={{ color: '#374151' }}>
-                            JIRA 汇总
-                            <span className="ml-1 px-1.5 py-0.5 rounded text-xs" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>{archiveDetails.jiraLinks.length}</span>
-                          </h4>
-                          <div className="space-y-1 max-h-[200px] overflow-y-auto">
-                            {archiveDetails.jiraLinks.map((j: { caseName: string; jiraLink: string; testResult: string }, idx: number) => (
-                              <div key={idx} className="flex items-center gap-2 text-xs px-2 py-1 rounded" style={{ backgroundColor: '#FFF' }}>
-                                <span style={{ color: j.testResult === 'Fail' ? '#EF4444' : j.testResult === 'Block' ? '#F97316' : '#6B7280' }}>
-                                  {j.testResult === 'Fail' ? '✗' : j.testResult === 'Block' ? '⊘' : '●'}
-                                </span>
-                                <span style={{ color: '#374151' }}>{j.caseName}</span>
-                                <a href={j.jiraLink} target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: '#0073E6' }}>
-                                  {j.jiraLink.includes('browse/') ? j.jiraLink.split('browse/').pop() : 'JIRA链接'}
-                                </a>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function StatsPreviewModal({
   level,
   id,
@@ -4390,6 +4237,492 @@ function StatCard({ label, value, subtext, color }: { label: string; value: numb
       <div className="text-xs mb-1" style={{ color: '#6B7280' }}>{label}</div>
       <div className="text-xl font-bold" style={{ color }}>{value}</div>
       {subtext && <div className="text-xs mt-0.5" style={{ color: '#9CA3AF' }}>{subtext}</div>}
+    </div>
+  );
+}
+
+function GanttKanbanView({
+  data,
+  loading,
+  isManager,
+  onClose,
+  onRefresh,
+}: {
+  data: KanbanGanttData | null;
+  loading: boolean;
+  isManager: boolean;
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  const [startDate, setStartDate] = useState<string>(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+  });
+  const [periodMonths, setPeriodMonths] = useState<3 | 6 | 9 | 12>(6);
+  const [granularity, setGranularity] = useState<'day' | 'week' | 'month'>('week');
+  const [hoveredProject, setHoveredProject] = useState<number | null>(null);
+  const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
+  const [editingDates, setEditingDates] = useState<{ id: number; name: string; startDate: string; endDate: string } | null>(null);
+  const [savingDates, setSavingDates] = useState(false);
+  const ganttContainerRef = useRef<HTMLDivElement>(null);
+
+  const today = new Date();
+
+  const viewStartDate = new Date(startDate);
+  const viewEndDate = new Date(viewStartDate);
+  viewEndDate.setMonth(viewEndDate.getMonth() + periodMonths);
+
+  const totalDays = Math.ceil((viewEndDate.getTime() - viewStartDate.getTime()) / (1000 * 60 * 60 * 24));
+
+  const getDateOffset = (dateStr: string | null) => {
+    if (!dateStr) return null;
+    const d = new Date(dateStr);
+    const diff = (d.getTime() - viewStartDate.getTime()) / (1000 * 60 * 60 * 24);
+    return diff;
+  };
+
+  const getTodayOffset = () => {
+    return (today.getTime() - viewStartDate.getTime()) / (1000 * 60 * 60 * 24);
+  };
+
+  const formatHeaderDate = (date: Date, gran: 'day' | 'week' | 'month') => {
+    if (gran === 'day') {
+      return `${date.getMonth() + 1}/${date.getDate()}`;
+    } else if (gran === 'week') {
+      return `${date.getMonth() + 1}/${date.getDate()}`;
+    } else {
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    }
+  };
+
+  const generateTimeHeaders = () => {
+    const headers: { label: string; width: number; date: Date }[] = [];
+    if (granularity === 'day') {
+      for (let i = 0; i < totalDays; i++) {
+        const d = new Date(viewStartDate);
+        d.setDate(d.getDate() + i);
+        headers.push({ label: formatHeaderDate(d, 'day'), width: 1, date: d });
+      }
+    } else if (granularity === 'week') {
+      let weekStart = new Date(viewStartDate);
+      while (weekStart < viewEndDate) {
+        const weekEnd = new Date(weekStart);
+        weekEnd.setDate(weekEnd.getDate() + 7);
+        const actualEnd = weekEnd < viewEndDate ? weekEnd : viewEndDate;
+        const daysInWeek = Math.ceil((actualEnd.getTime() - weekStart.getTime()) / (1000 * 60 * 60 * 24));
+        headers.push({ label: formatHeaderDate(weekStart, 'week'), width: daysInWeek, date: new Date(weekStart) });
+        weekStart = weekEnd;
+      }
+    } else {
+      let monthStart = new Date(viewStartDate.getFullYear(), viewStartDate.getMonth(), 1);
+      if (monthStart < viewStartDate) monthStart = new Date(viewStartDate);
+      while (monthStart < viewEndDate) {
+        const monthEnd = new Date(monthStart.getFullYear(), monthStart.getMonth() + 1, 1);
+        const actualEnd = monthEnd < viewEndDate ? monthEnd : viewEndDate;
+        const daysInMonth = Math.ceil((actualEnd.getTime() - monthStart.getTime()) / (1000 * 60 * 60 * 24));
+        headers.push({ label: formatHeaderDate(monthStart, 'month'), width: daysInMonth, date: new Date(monthStart) });
+        monthStart = monthEnd;
+      }
+    }
+    return headers;
+  };
+
+  const timeHeaders = generateTimeHeaders();
+  const totalWidthUnits = timeHeaders.reduce((sum, h) => sum + h.width, 0);
+  const PX_PER_DAY = granularity === 'day' ? 30 : granularity === 'week' ? 12 : 6;
+  const totalWidth = totalWidthUnits * PX_PER_DAY;
+  const todayOffset = getTodayOffset();
+
+  const handleSaveDates = async () => {
+    if (!editingDates) return;
+    setSavingDates(true);
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: editingDates.id,
+          start_date: editingDates.startDate || null,
+          end_date: editingDates.endDate || null,
+        }),
+      });
+      const d = await res.json();
+      if (d.success) {
+        setEditingDates(null);
+        onRefresh();
+      } else {
+        alert(d.error || '保存失败');
+      }
+    } catch {
+      alert('保存失败');
+    } finally {
+      setSavingDates(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full" style={{ color: '#999' }}>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 mx-auto mb-4" style={{ borderColor: '#0073E6' }}></div>
+          <p className="text-sm">加载看板数据...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const { projects, summary } = data;
+
+  return (
+    <div className="h-full flex flex-col">
+      {/* Header */}
+      <div className="flex items-center justify-between px-6 py-3 border-b" style={{ borderColor: '#EEEEEE', backgroundColor: '#FAFBFC' }}>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center justify-center w-7 h-7 rounded" style={{ backgroundColor: '#0073E6' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
+          </div>
+          <span className="font-bold text-sm" style={{ color: '#1F2937' }}>项目看板</span>
+          <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#F0F7FF', color: '#0073E6' }}>
+            {summary.projectCount} 个进行中项目
+          </span>
+        </div>
+        <button
+          onClick={onClose}
+          className="px-3 py-1.5 text-xs rounded hover:bg-gray-100 transition-colors flex items-center gap-1"
+          style={{ color: '#666' }}
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          关闭看板
+        </button>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-6 gap-3 px-6 py-3 border-b" style={{ borderColor: '#EEEEEE' }}>
+        <StatCard label="总用例" value={summary.total} color="#0073E6" />
+        <StatCard label="已完成" value={summary.completed} subtext={`${summary.completionRate}%`} color="#22C55E" />
+        <StatCard label="通过" value={summary.passed} subtext={`${summary.passRate}%`} color="#10B981" />
+        <StatCard label="失败" value={summary.failed} color="#EF4444" />
+        <StatCard label="阻塞" value={summary.blocked} color="#F97316" />
+        <StatCard label="未完成" value={summary.incomplete} color="#9CA3AF" />
+      </div>
+
+      {/* Controls */}
+      <div className="flex items-center gap-4 px-6 py-2 border-b" style={{ borderColor: '#EEEEEE', backgroundColor: '#FAFBFC' }}>
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-medium" style={{ color: '#374151' }}>起始日期</label>
+          <input
+            type="date"
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+            className="text-xs px-2 py-1 border rounded"
+            style={{ borderColor: '#D1D5DB', color: '#374151' }}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-medium" style={{ color: '#374151' }}>展示周期</label>
+          <div className="flex items-center rounded border overflow-hidden" style={{ borderColor: '#D1D5DB' }}>
+            {[3, 6, 9, 12].map(m => (
+              <button
+                key={m}
+                onClick={() => setPeriodMonths(m as 3 | 6 | 9 | 12)}
+                className="text-xs px-2.5 py-1 transition-colors"
+                style={{
+                  backgroundColor: periodMonths === m ? '#0073E6' : '#FFF',
+                  color: periodMonths === m ? '#FFF' : '#374151',
+                }}
+              >
+                {m}个月
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-medium" style={{ color: '#374151' }}>时间粒度</label>
+          <div className="flex items-center rounded border overflow-hidden" style={{ borderColor: '#D1D5DB' }}>
+            {[
+              { key: 'day', label: '天' },
+              { key: 'week', label: '周' },
+              { key: 'month', label: '月' },
+            ].map(g => (
+              <button
+                key={g.key}
+                onClick={() => setGranularity(g.key as 'day' | 'week' | 'month')}
+                className="text-xs px-2.5 py-1 transition-colors"
+                style={{
+                  backgroundColor: granularity === g.key ? '#0073E6' : '#FFF',
+                  color: granularity === g.key ? '#FFF' : '#374151',
+                }}
+              >
+                {g.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Gantt Chart */}
+      <div className="flex-1 overflow-auto px-6 py-4" ref={ganttContainerRef}>
+        <div style={{ minWidth: totalWidth + 200 }}>
+          {/* Time Header Row */}
+          <div className="flex" style={{ borderBottom: '1px solid #E5E7EB' }}>
+            <div className="flex-shrink-0" style={{ width: '200px' }}>
+              <div className="text-xs font-semibold px-3 py-2" style={{ color: '#374151', backgroundColor: '#F9FAFB' }}>项目名称</div>
+            </div>
+            <div className="flex-1 flex" style={{ position: 'relative' }}>
+              {timeHeaders.map((h, i) => (
+                <div
+                  key={i}
+                  className="text-center text-xs px-1 py-2 border-l flex-shrink-0"
+                  style={{
+                    width: `${h.width * PX_PER_DAY}px`,
+                    borderColor: '#E5E7EB',
+                    color: '#6B7280',
+                    backgroundColor: '#F9FAFB',
+                    fontSize: '10px',
+                    overflow: 'hidden',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {h.label}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Project Rows */}
+          {projects.map(project => {
+            const startOffset = getDateOffset(project.startDate);
+            const endOffset = getDateOffset(project.endDate);
+            const barLeft = startOffset !== null ? startOffset * PX_PER_DAY : 0;
+            const barWidth = (startOffset !== null && endOffset !== null) ? (endOffset - startOffset) * PX_PER_DAY : 0;
+
+            return (
+              <div key={project.id} className="flex items-stretch" style={{ borderBottom: '1px solid #F3F4F6', minHeight: '44px' }}>
+                {/* Project Name */}
+                <div className="flex-shrink-0 flex items-center gap-1 px-3" style={{ width: '200px' }}>
+                  <span className="text-xs font-medium truncate" style={{ color: '#1F2937' }}>{project.name}</span>
+                  {isManager && (
+                    <button
+                      onClick={() => setEditingDates({
+                        id: project.id,
+                        name: project.name,
+                        startDate: project.startDate || '',
+                        endDate: project.endDate || '',
+                      })}
+                      className="flex-shrink-0 p-0.5 rounded hover:bg-gray-100"
+                      title="编辑日期"
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                    </button>
+                  )}
+                </div>
+
+                {/* Gantt Bar Area */}
+                <div
+                  className="flex-1 relative"
+                  style={{ position: 'relative' }}
+                  onMouseEnter={(e) => {
+                    setHoveredProject(project.id);
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setTooltipPos({ x: rect.left + barLeft + barWidth / 2, y: rect.bottom });
+                  }}
+                  onMouseLeave={() => {
+                    setHoveredProject(null);
+                    setTooltipPos(null);
+                  }}
+                >
+                  {/* Grid lines */}
+                  {timeHeaders.map((h, i) => (
+                    <div
+                      key={i}
+                      className="absolute top-0 bottom-0 border-l"
+                      style={{
+                        left: `${h.width * PX_PER_DAY * timeHeaders.slice(0, i).reduce((s, hh) => s + hh.width, 0) / totalWidthUnits * 100}%`,
+                        borderColor: '#F3F4F6',
+                      }}
+                    />
+                  ))}
+
+                  {/* Today Line */}
+                  {todayOffset >= 0 && todayOffset <= totalDays && (
+                    <div
+                      className="absolute top-0 bottom-0"
+                      style={{
+                        left: `${(todayOffset / totalWidthUnits) * 100}%`,
+                        width: '2px',
+                        backgroundColor: '#EF4444',
+                        zIndex: 5,
+                      }}
+                    />
+                  )}
+
+                  {/* Project Bar */}
+                  {barWidth > 0 && (
+                    <div
+                      className="absolute rounded"
+                      style={{
+                        left: `${(barLeft / totalWidth) * 100}%`,
+                        width: `${(barWidth / totalWidth) * 100}%`,
+                        top: '8px',
+                        height: '28px',
+                        backgroundColor: '#E6F2FF',
+                        border: '1px solid #0073E6',
+                        zIndex: 3,
+                        cursor: 'pointer',
+                      }}
+                    >
+                      {/* Completed portion */}
+                      <div
+                        className="h-full rounded-l"
+                        style={{
+                          width: `${project.completionRate}%`,
+                          backgroundColor: '#0073E6',
+                          borderRadius: project.completionRate >= 100 ? '3px' : '3px 0 0 3px',
+                        }}
+                      />
+                      {/* Progress text */}
+                      <span
+                        className="absolute inset-0 flex items-center justify-center text-xs font-medium"
+                        style={{ color: project.completionRate > 50 ? '#FFF' : '#0073E6', zIndex: 4 }}
+                      >
+                        {project.completionRate}%
+                      </span>
+                    </div>
+                  )}
+
+                  {/* No date set indicator */}
+                  {barWidth <= 0 && (
+                    <div className="absolute inset-0 flex items-center">
+                      <span className="text-xs" style={{ color: '#D1D5DB', paddingLeft: '8px' }}>未设置日期</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+
+          {projects.length === 0 && (
+            <div className="text-center py-12 text-sm" style={{ color: '#9CA3AF' }}>
+              暂无进行中的项目
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Hover Tooltip */}
+      {hoveredProject !== null && tooltipPos && data && (() => {
+        const project = data.projects.find(p => p.id === hoveredProject);
+        if (!project) return null;
+        return createPortal(
+          <div
+            className="fixed z-[100] bg-white rounded-lg shadow-xl border p-4"
+            style={{
+              left: `${Math.min(tooltipPos.x, window.innerWidth - 320)}px`,
+              top: `${tooltipPos.y + 4}px`,
+              minWidth: '280px',
+              maxWidth: '360px',
+              borderColor: '#E5E7EB',
+            }}
+          >
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm font-bold" style={{ color: '#1F2937' }}>{project.name}</span>
+              <span className="text-xs px-1.5 py-0.5 rounded" style={{
+                backgroundColor: project.completionRate >= 80 ? '#F0FFF4' : project.completionRate >= 50 ? '#FFFBEB' : '#FEF2F2',
+                color: project.completionRate >= 80 ? '#16A34A' : project.completionRate >= 50 ? '#D97706' : '#DC2626',
+              }}>
+                {project.completionRate}%
+              </span>
+            </div>
+            <div className="grid grid-cols-4 gap-2 text-xs mb-2" style={{ color: '#6B7280' }}>
+              <div>总用例 <b style={{ color: '#333' }}>{project.total}</b></div>
+              <div>通过 <b style={{ color: '#22C55E' }}>{project.passed}</b></div>
+              <div>失败 <b style={{ color: '#EF4444' }}>{project.failed}</b></div>
+              <div>阻塞 <b style={{ color: '#F97316' }}>{project.blocked}</b></div>
+            </div>
+            {project.startDate && project.endDate && (
+              <div className="text-xs mb-2" style={{ color: '#6B7280' }}>
+                {project.startDate} ~ {project.endDate}
+              </div>
+            )}
+            {project.testers.length > 0 && (
+              <div>
+                <div className="text-xs font-semibold mb-1.5" style={{ color: '#374151' }}>执行者进度</div>
+                <div className="space-y-1.5">
+                  {project.testers.map(tester => (
+                    <div key={tester.userId} className="flex items-center gap-2">
+                      <span className="text-xs flex-shrink-0" style={{ color: '#374151', width: '56px' }}>{tester.username}</span>
+                      <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full"
+                          style={{
+                            width: `${tester.completionRate}%`,
+                            backgroundColor: tester.completionRate >= 80 ? '#22C55E' : tester.completionRate >= 50 ? '#F97316' : '#EF4444',
+                          }}
+                        />
+                      </div>
+                      <span className="text-xs flex-shrink-0" style={{ color: '#6B7280', width: '36px', textAlign: 'right' }}>{tester.completionRate}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>,
+          document.body
+        );
+      })()}
+
+      {/* Date Edit Dialog */}
+      {editingDates && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}>
+          <div className="bg-white rounded-xl shadow-2xl w-[400px] overflow-hidden">
+            <div className="px-6 py-4 border-b" style={{ borderColor: '#EEEEEE' }}>
+              <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>编辑项目日期</h3>
+              <p className="text-sm mt-1" style={{ color: '#6B7280' }}>{editingDates.name}</p>
+            </div>
+            <div className="px-6 py-4 space-y-4">
+              <div>
+                <label className="block text-sm font-medium mb-1" style={{ color: '#374151' }}>开始日期</label>
+                <input
+                  type="date"
+                  value={editingDates.startDate}
+                  onChange={(e) => setEditingDates({ ...editingDates, startDate: e.target.value })}
+                  className="w-full text-sm px-3 py-2 border rounded"
+                  style={{ borderColor: '#D1D5DB', color: '#374151' }}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium mb-1" style={{ color: '#374151' }}>结束日期</label>
+                <input
+                  type="date"
+                  value={editingDates.endDate}
+                  onChange={(e) => setEditingDates({ ...editingDates, endDate: e.target.value })}
+                  className="w-full text-sm px-3 py-2 border rounded"
+                  style={{ borderColor: '#D1D5DB', color: '#374151' }}
+                />
+              </div>
+            </div>
+            <div className="px-6 py-3 border-t flex justify-end gap-2" style={{ borderColor: '#EEEEEE' }}>
+              <button
+                onClick={() => setEditingDates(null)}
+                className="px-4 py-2 text-sm rounded border hover:bg-gray-50"
+                style={{ borderColor: '#D1D5DB', color: '#374151' }}
+              >
+                取消
+              </button>
+              <button
+                onClick={handleSaveDates}
+                disabled={savingDates}
+                className="px-4 py-2 text-sm rounded text-white hover:opacity-90 disabled:opacity-50"
+                style={{ backgroundColor: '#0073E6' }}
+              >
+                {savingDates ? '保存中...' : '保存'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

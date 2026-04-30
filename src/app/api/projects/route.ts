@@ -51,8 +51,8 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '无修改权限' }, { status: 403 });
     }
 
-    const { id, name } = await request.json();
-    if (!id || !name || !name.trim()) {
+    const { id, name, start_date, end_date } = await request.json();
+    if (!id) {
       return NextResponse.json({ error: '参数错误' }, { status: 400 });
     }
 
@@ -60,7 +60,16 @@ export async function PUT(request: NextRequest) {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as { id: number } | undefined;
     if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
 
-    db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(name.trim(), id);
+    if (name !== undefined && name !== null) {
+      if (!name.trim()) return NextResponse.json({ error: '项目名称不能为空' }, { status: 400 });
+      db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(name.trim(), id);
+    }
+
+    if (start_date !== undefined || end_date !== undefined) {
+      const sd = start_date !== undefined ? start_date : (project as Record<string, unknown>).start_date as string | null;
+      const ed = end_date !== undefined ? end_date : (project as Record<string, unknown>).end_date as string | null;
+      db.prepare('UPDATE projects SET start_date = ?, end_date = ? WHERE id = ?').run(sd, ed, id);
+    }
 
     return NextResponse.json({ success: true });
   } catch (error) {

@@ -196,6 +196,16 @@ function initializeDatabase(db: Database.Database) {
     db.exec(`ALTER TABLE projects ADD COLUMN archived_by TEXT DEFAULT ''`);
   } catch { /* column already exists */ }
 
+  // Migration: add start_date column to projects table
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN start_date TEXT DEFAULT NULL`);
+  } catch { /* column already exists */ }
+
+  // Migration: add end_date column to projects table
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN end_date TEXT DEFAULT NULL`);
+  } catch { /* column already exists */ }
+
   // Initialize default users if not exists
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
   if (userCount.count === 0) {
