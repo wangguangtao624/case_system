@@ -220,8 +220,10 @@ export default function DashboardPage() {
       if (data.isManager !== undefined) {
         setIsManager(data.isManager);
       }
+      return data.tree as TreeNode[] | undefined;
     } catch (error) {
       console.error('Load tree error:', error);
+      return undefined;
     }
   }, []);
 
@@ -328,7 +330,7 @@ export default function DashboardPage() {
     return null;
   };
 
-  const findCaseNodeByDbId = (nodes: TreeNode[], caseId: number): TreeNode | null => {
+  const findCaseNodeByDbId = useCallback((nodes: TreeNode[], caseId: number): TreeNode | null => {
     for (const node of nodes) {
       if (node.type === 'case' && node.dbId === caseId) return node;
       if (node.children) {
@@ -337,12 +339,62 @@ export default function DashboardPage() {
       }
     }
     return null;
-  };
+  }, []);
+
+  const findNodePathByDbId = useCallback((
+    nodes: TreeNode[],
+    type: TreeNode['type'],
+    dbId: number,
+    path: TreeNode[] = [],
+  ): TreeNode[] | null => {
+    for (const node of nodes) {
+      const nextPath = [...path, node];
+      if (node.type === type && node.dbId === dbId) return nextPath;
+      if (node.children) {
+        const found = findNodePathByDbId(node.children, type, dbId, nextPath);
+        if (found) return found;
+      }
+    }
+    return null;
+  }, []);
+
+  const expandNodePath = useCallback((path: TreeNode[], includeLastNode = false) => {
+    setExpandedNodes(prev => {
+      const next = new Set(prev);
+      const nodesToExpand = includeLastNode ? path : path.slice(0, -1);
+      for (const pathNode of nodesToExpand) {
+        if (pathNode.type !== 'case') next.add(pathNode.id);
+      }
+      return next;
+    });
+  }, []);
+
+  const handleNavigateTreeNode = useCallback(async (type: 'project' | 'module', dbId: number) => {
+    setShowKanban(false);
+    setKanbanData(null);
+    setSelectedCase(null);
+    let path = findNodePathByDbId(tree, type, dbId);
+    if (!path) {
+      setTesterFilter('');
+      const freshTree = await loadTree('', projectFilter);
+      path = freshTree ? findNodePathByDbId(freshTree, type, dbId) : null;
+    }
+    if (path) {
+      setSelectedNodeId(path[path.length - 1].id);
+      expandNodePath(path, true);
+    } else {
+      setSelectedNodeId(`${type}-${dbId}`);
+    }
+  }, [expandNodePath, findNodePathByDbId, loadTree, projectFilter, tree]);
 
   const handleOpenCaseById = useCallback(async (caseId: number) => {
     setShowKanban(false);
     setKanbanData(null);
-    const matchedNode = findCaseNodeByDbId(tree, caseId);
+    const matchedPath = findNodePathByDbId(tree, 'case', caseId);
+    const matchedNode = matchedPath?.[matchedPath.length - 1] || findCaseNodeByDbId(tree, caseId);
+    if (matchedPath) {
+      expandNodePath(matchedPath);
+    }
     if (matchedNode) {
       setSelectedNodeId(matchedNode.id);
     }
@@ -350,6 +402,15 @@ export default function DashboardPage() {
       const res = await fetch(`/api/cases/${caseId}?_t=${Date.now()}`);
       const data = await res.json();
       if (data.case) {
+        if (!matchedPath) {
+          setTesterFilter('');
+          const freshTree = await loadTree('', projectFilter);
+          const freshPath = freshTree ? findNodePathByDbId(freshTree, 'case', caseId) : null;
+          if (freshPath) {
+            expandNodePath(freshPath);
+            setSelectedNodeId(freshPath[freshPath.length - 1].id);
+          }
+        }
         setSelectedCase(data.case as CaseData);
         setSelectedFiles((data.files || []) as FileData[]);
         let permissions = data.permissions || { isManager: false, isAssignedTester: false, canEditCore: false, canEditResult: false };
@@ -363,7 +424,7 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('Load case error:', error);
     }
-  }, [tree]);
+  }, [expandNodePath, findCaseNodeByDbId, findNodePathByDbId, loadTree, projectFilter, tree]);
 
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -587,6 +648,7 @@ export default function DashboardPage() {
               isManager={isManager}
               onClose={() => { setShowKanban(false); setKanbanData(null); }}
               onNavigateCase={handleOpenCaseById}
+              onNavigateTreeNode={handleNavigateTreeNode}
               onRefresh={() => {
                 setKanbanLoading(true);
                 fetch('/api/stats/kanban')
@@ -1108,16 +1170,23 @@ function SidebarTree({
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
-            <span className="truncate flex-1 flex items-center gap-1">
-              {node.name}
-              {node.isArchived && (
-                <span className="text-xs px-1 rounded" style={{ color: '#92400E', backgroundColor: '#FEF3C7', fontSize: '10px' }}>已归档</span>
-              )}
-              {(node.type === 'project' || node.type === 'module') && node.resolvedTesterNames && (
-                <span className="text-xs px-1 rounded" style={{ color: '#999', backgroundColor: '#F5F5F5', fontSize: '10px' }}>{node.resolvedTesterNames}</span>
-              )}
-              {node.type === 'case' && node.testerName && (
-                <span className="text-xs px-1 rounded" style={{ color: '#8B5CF6', backgroundColor: '#F5F3FF', fontSize: '10px' }}>{node.testerName}</span>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-1 min-w-0">
+                <span className="truncate">{node.name}</span>
+                {node.isArchived && (
+                  <span className="text-xs px-1 rounded flex-shrink-0" style={{ color: '#92400E', backgroundColor: '#FEF3C7', fontSize: '10px' }}>已归档</span>
+                )}
+                {node.type === 'module' && node.resolvedTesterNames && (
+                  <span className="text-xs px-1 rounded truncate" style={{ color: '#999', backgroundColor: '#F5F5F5', fontSize: '10px', maxWidth: '120px' }} title={node.resolvedTesterNames}>{node.resolvedTesterNames}</span>
+                )}
+                {node.type === 'case' && node.testerName && (
+                  <span className="text-xs px-1 rounded flex-shrink-0" style={{ color: '#8B5CF6', backgroundColor: '#F5F3FF', fontSize: '10px' }}>{node.testerName}</span>
+                )}
+              </span>
+              {node.type === 'project' && node.resolvedTesterNames && (
+                <span className="mt-0.5 block text-[10px] leading-4 whitespace-normal break-words" style={{ color: '#64748B' }}>
+                  {node.resolvedTesterNames}
+                </span>
               )}
             </span>
           )}
@@ -4318,6 +4387,7 @@ function GanttKanbanView({
   isManager,
   onClose,
   onNavigateCase,
+  onNavigateTreeNode,
   onRefresh,
 }: {
   data: KanbanGanttData | null;
@@ -4325,6 +4395,7 @@ function GanttKanbanView({
   isManager: boolean;
   onClose: () => void;
   onNavigateCase: (caseId: number) => void;
+  onNavigateTreeNode: (type: 'project' | 'module', dbId: number) => void;
   onRefresh: () => void;
 }) {
   const defaultStartDate = (() => {
@@ -4342,6 +4413,7 @@ function GanttKanbanView({
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [sortByStartDate, setSortByStartDate] = useState(false);
   const [showOnlyIncompleteModules, setShowOnlyIncompleteModules] = useState(false);
+  const [expandedModuleKey, setExpandedModuleKey] = useState<string | null>(null);
   const ganttContainerRef = useRef<HTMLDivElement>(null);
 
   const today = new Date();
@@ -4374,6 +4446,15 @@ function GanttKanbanView({
           } else if (preferences.granularity === 'day') {
             setGranularity('week');
           }
+          if (typeof preferences.sortByStartDate === 'boolean') {
+            setSortByStartDate(preferences.sortByStartDate);
+          }
+          if (typeof preferences.showOnlyIncompleteModules === 'boolean') {
+            setShowOnlyIncompleteModules(preferences.showOnlyIncompleteModules);
+          }
+          if (typeof preferences.selectedProjectId === 'number') {
+            setSelectedProjectId(preferences.selectedProjectId);
+          }
         }
       })
       .catch(() => {})
@@ -4392,12 +4473,19 @@ function GanttKanbanView({
       fetch('/api/stats/kanban/preferences', {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ startDate, periodMonths, granularity }),
+        body: JSON.stringify({
+          startDate,
+          periodMonths,
+          granularity,
+          sortByStartDate,
+          showOnlyIncompleteModules,
+          selectedProjectId,
+        }),
       }).catch(() => {});
     }, 300);
 
     return () => window.clearTimeout(timer);
-  }, [startDate, periodMonths, granularity, preferencesLoaded]);
+  }, [startDate, periodMonths, granularity, sortByStartDate, showOnlyIncompleteModules, selectedProjectId, preferencesLoaded]);
 
   const viewStartDate = new Date(startDate);
   const viewEndDate = new Date(viewStartDate);
@@ -4494,6 +4582,31 @@ function GanttKanbanView({
     return modules;
   };
 
+  const getCompletionColor = (rate: number) => {
+    if (rate >= 100) return '#16A34A';
+    if (rate >= 70) return '#0EA5E9';
+    if (rate > 0) return '#F59E0B';
+    return '#CBD5E1';
+  };
+
+  const getCaseStatusMeta = (testResult: string | null) => {
+    if (testResult === 'Pass') return { label: '通过', color: '#16A34A', backgroundColor: '#DCFCE7' };
+    if (testResult === 'Fail') return { label: '失败', color: '#DC2626', backgroundColor: '#FEE2E2' };
+    if (testResult === 'Block') return { label: '阻塞', color: '#D97706', backgroundColor: '#FEF3C7' };
+    return { label: '未完成', color: '#64748B', backgroundColor: '#F1F5F9' };
+  };
+
+  const getModuleCases = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat): KanbanCaseStat[] => {
+    if (!selectedProject) return [];
+    return selectedProject.cases
+      .filter(caseItem => caseItem.testerId === tester.userId && caseItem.moduleId === moduleStat.moduleId)
+      .sort((a, b) => {
+        const left = `${a.caseNo || ''} ${a.caseName || ''}`;
+        const right = `${b.caseNo || ''} ${b.caseName || ''}`;
+        return left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' });
+      });
+  };
+
   const refreshBoardView = () => {
     const startTimes = projects
       .map(project => project.startDate ? new Date(project.startDate).getTime() : NaN)
@@ -4506,6 +4619,18 @@ function GanttKanbanView({
     setPeriodMonths(9);
     setGranularity('month');
     setSortByStartDate(true);
+    fetch('/api/stats/kanban/preferences', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        startDate: normalized,
+        periodMonths: 9,
+        granularity: 'month',
+        sortByStartDate: true,
+        showOnlyIncompleteModules,
+        selectedProjectId,
+      }),
+    }).catch(() => {});
     onRefresh();
   };
 
@@ -4778,14 +4903,14 @@ function GanttKanbanView({
                         className="h-full rounded-l"
                         style={{
                           width: `${project.completionRate}%`,
-                          backgroundColor: '#0073E6',
+                          backgroundColor: getCompletionColor(project.completionRate),
                           borderRadius: project.completionRate >= 100 ? '3px' : '3px 0 0 3px',
                         }}
                       />
                       {/* Progress text */}
                       <span
                         className="absolute inset-0 flex items-center justify-center text-xs font-medium"
-                        style={{ color: project.completionRate > 50 ? '#FFF' : '#0073E6', zIndex: 4 }}
+                        style={{ color: project.completionRate > 50 ? '#FFF' : '#0F766E', zIndex: 4 }}
                       >
                         {project.completionRate}%
                       </span>
@@ -4813,15 +4938,22 @@ function GanttKanbanView({
         </div>
 
         {selectedProject && (
-          <div className="mt-6 rounded-xl border overflow-hidden" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' }}>
-            <div className="px-5 py-4 border-b" style={{ borderColor: '#E5E7EB', backgroundColor: '#FAFBFC' }}>
+          <div className="mt-5 rounded-md border overflow-hidden" style={{ borderColor: '#DDE3EA', backgroundColor: '#FFFFFF' }}>
+            <div className="px-5 py-4 border-b" style={{ borderColor: '#E5E7EB', backgroundColor: '#F8FAFC' }}>
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>{selectedProject.name}</h3>
-                    <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#F0F7FF', color: '#0073E6' }}>
+                    <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#EEF6FF', color: '#0369A1' }}>
                       {selectedProject.testers.length} 位执行者
                     </span>
+                    <button
+                      onClick={() => onNavigateTreeNode('project', selectedProject.id)}
+                      className="text-xs px-2 py-0.5 rounded border hover:bg-white"
+                      style={{ borderColor: '#CBD5E1', color: '#475569' }}
+                    >
+                      定位项目
+                    </button>
                   </div>
                   <div className="text-xs mt-1" style={{ color: '#6B7280' }}>
                     {selectedProject.startDate && selectedProject.endDate
@@ -4841,7 +4973,7 @@ function GanttKanbanView({
                   </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#F0FFF4', color: '#16A34A' }}>
+                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#ECFDF5', color: '#047857' }}>
                     完成 {selectedProject.completed}/{selectedProject.total}
                   </span>
                   <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
@@ -4857,7 +4989,7 @@ function GanttKanbanView({
               </div>
             </div>
 
-            <div className="px-5 py-4 border-b" style={{ borderColor: '#E5E7EB' }}>
+            <div className="px-5 py-4" style={{ borderColor: '#E5E7EB' }}>
               <div className="flex items-center justify-between mb-3">
                 <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>执行者与二级目录进度</h4>
                 <div className="flex items-center gap-2">
@@ -4868,72 +5000,136 @@ function GanttKanbanView({
                   >
                     {showOnlyIncompleteModules ? '查看全部目录' : '一键查看未完成目录'}
                   </button>
-                  <span className="text-xs" style={{ color: '#6B7280' }}>
-                    鼠标悬停目录进度条可查看完成数与状态分布
-                  </span>
                 </div>
               </div>
-              <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <div className="space-y-4">
                 {selectedProject.testers.map(tester => (
-                  <div key={tester.userId} className="rounded-lg border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FCFCFD' }}>
-                    <div className="flex items-center justify-between gap-3 mb-3">
-                      <div>
-                        <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>{tester.username}</div>
-                        <div className="text-xs mt-0.5" style={{ color: '#6B7280' }}>
-                          {tester.completed}/{tester.total} 已完成，失败 {tester.failed}，阻塞 {tester.blocked}
+                  <div key={tester.userId} className="rounded-md border" style={{ borderColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
+                    <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr]">
+                      <div className="p-4 border-b lg:border-b-0 lg:border-r" style={{ borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' }}>
+                        <div className="flex items-start justify-between gap-3 lg:block">
+                          <div>
+                            <div className="text-sm font-semibold" style={{ color: '#0F172A' }}>{tester.username}</div>
+                            <div className="text-xs mt-1 leading-5" style={{ color: '#64748B' }}>
+                              完成 {tester.completed}/{tester.total}
+                            </div>
+                            <div className="text-[11px] leading-5" style={{ color: '#94A3B8' }}>
+                              失败 {tester.failed} · 阻塞 {tester.blocked} · 未完成 {tester.incomplete}
+                            </div>
+                          </div>
+                          <div className="text-right lg:text-left lg:mt-4">
+                            <div className="text-2xl font-bold leading-none" style={{ color: getCompletionColor(tester.completionRate) }}>
+                              {tester.completionRate}%
+                            </div>
+                            <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>总进度</div>
+                          </div>
+                        </div>
+                        <div className="h-4 rounded-sm overflow-hidden mt-4" style={{ backgroundColor: '#E2E8F0' }}>
+                          <div
+                            className="h-full rounded-sm"
+                            style={{
+                              width: `${tester.completionRate}%`,
+                              backgroundColor: getCompletionColor(tester.completionRate),
+                            }}
+                          />
                         </div>
                       </div>
-                      <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: '#F0F7FF', color: '#0073E6' }}>
-                        总进度 {tester.completionRate}%
-                      </span>
-                    </div>
-                    <div className="h-3 rounded-full overflow-hidden mb-3" style={{ backgroundColor: '#E5E7EB' }}>
-                      <div
-                        className="h-full rounded-full"
-                        style={{
-                          width: `${tester.completionRate}%`,
-                          backgroundColor: tester.completionRate >= 80 ? '#22C55E' : tester.completionRate >= 50 ? '#F97316' : '#EF4444',
-                        }}
-                      />
-                    </div>
-                    <div className="space-y-2 max-h-[260px] overflow-auto pr-1">
-                      {getVisibleModules(tester).length > 0 ? getVisibleModules(tester).map(moduleStat => (
-                        <div key={`${tester.userId}-${moduleStat.key}`} className="rounded border px-3 py-2" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFF' }}>
-                          <div className="flex items-center justify-between gap-2 mb-2">
-                            <div className="min-w-0">
-                              <div className="text-xs font-medium truncate" style={{ color: '#1F2937' }}>
-                                {moduleStat.moduleName}
+                      <div className="p-4">
+                        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                          {getVisibleModules(tester).length > 0 ? getVisibleModules(tester).map(moduleStat => {
+                            const moduleRowKey = `${tester.userId}-${moduleStat.key}`;
+                            const isModuleExpanded = expandedModuleKey === moduleRowKey;
+                            const moduleCases = getModuleCases(tester, moduleStat);
+
+                            return (
+                              <div key={moduleRowKey} className="rounded-md border px-3 py-2" style={{ borderColor: isModuleExpanded ? '#93C5FD' : '#E2E8F0', backgroundColor: isModuleExpanded ? '#F8FBFF' : '#FFFFFF' }}>
+                                <div className="flex items-start justify-between gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedModuleKey(isModuleExpanded ? null : moduleRowKey)}
+                                    className="min-w-0 text-left flex-1"
+                                  >
+                                    <div className="flex items-center gap-1.5">
+                                      <span className="text-[10px]" style={{ color: '#64748B' }}>{isModuleExpanded ? '▼' : '▶'}</span>
+                                      <span className="text-xs font-semibold truncate" style={{ color: '#0F172A' }}>{moduleStat.moduleName}</span>
+                                    </div>
+                                    <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>
+                                      完成 {moduleStat.completed}/{moduleStat.total} · 未完成 {moduleStat.incomplete}
+                                    </div>
+                                  </button>
+                                  <div className="flex flex-shrink-0 items-center gap-1">
+                                    <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#F1F5F9', color: '#334155' }}>
+                                      {moduleStat.completionRate}%
+                                    </span>
+                                    <button
+                                      type="button"
+                                      onClick={() => onNavigateTreeNode('module', moduleStat.moduleId)}
+                                      className="text-xs px-2 py-0.5 rounded border hover:bg-slate-50"
+                                      style={{ borderColor: '#CBD5E1', color: '#475569' }}
+                                    >
+                                      定位
+                                    </button>
+                                  </div>
+                                </div>
+                                <div
+                                  className="h-2 rounded-sm overflow-hidden mt-2"
+                                  style={{ backgroundColor: '#E2E8F0' }}
+                                  title={getModuleTooltipText(tester, moduleStat)}
+                                >
+                                  <div
+                                    className="h-full rounded-sm"
+                                    style={{
+                                      width: `${moduleStat.completionRate}%`,
+                                      backgroundColor: getCompletionColor(moduleStat.completionRate),
+                                    }}
+                                  />
+                                </div>
+                                {isModuleExpanded && (
+                                  <div className="mt-3 border-t pt-2 space-y-1.5" style={{ borderColor: '#E2E8F0' }}>
+                                    {moduleCases.length > 0 ? moduleCases.map(caseItem => {
+                                      const statusMeta = getCaseStatusMeta(caseItem.testResult);
+                                      const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
+
+                                      return (
+                                        <div key={caseItem.id} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
+                                          <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>
+                                            {statusMeta.label}
+                                          </span>
+                                          <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>
+                                            {caseTitle}
+                                          </span>
+                                          <button
+                                            type="button"
+                                            onClick={() => onNavigateCase(caseItem.id)}
+                                            className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50"
+                                            style={{ borderColor: '#CBD5E1', color: '#2563EB' }}
+                                          >
+                                            详情
+                                          </button>
+                                        </div>
+                                      );
+                                    }) : (
+                                      <div className="text-xs px-2 py-2" style={{ color: '#94A3B8' }}>暂无用例</div>
+                                    )}
+                                  </div>
+                                )}
                               </div>
-                              <div className="text-[11px] mt-0.5" style={{ color: '#6B7280' }}>
-                                {moduleStat.completed}/{moduleStat.total} 已完成，失败 {moduleStat.failed}，阻塞 {moduleStat.blocked}，未完成 {moduleStat.incomplete}
-                              </div>
+                            );
+                          }) : (
+                            <div className="text-xs" style={{ color: '#9CA3AF' }}>
+                              {showOnlyIncompleteModules ? '该执行者当前没有未完成目录' : '该执行者暂无用例'}
                             </div>
-                            <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#F0F7FF', color: '#0073E6' }}>
-                              {moduleStat.completionRate}%
-                            </span>
-                          </div>
-                          <div
-                            className="h-2.5 rounded-full overflow-hidden"
-                            style={{ backgroundColor: '#E5E7EB' }}
-                            title={getModuleTooltipText(tester, moduleStat)}
-                          >
-                            <div
-                              className="h-full rounded-full"
-                              style={{
-                                width: `${moduleStat.completionRate}%`,
-                                backgroundColor: moduleStat.incomplete > 0 ? '#F97316' : moduleStat.failed > 0 ? '#EF4444' : '#22C55E',
-                              }}
-                            />
-                          </div>
+                          )}
                         </div>
-                      )) : (
-                        <div className="text-xs" style={{ color: '#9CA3AF' }}>
-                          {showOnlyIncompleteModules ? '该执行者当前没有未完成目录' : '该执行者暂无用例'}
-                        </div>
-                      )}
+                      </div>
                     </div>
                   </div>
                 ))}
+                {selectedProject.testers.length === 0 && (
+                  <div className="rounded-md border px-4 py-6 text-sm text-center" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
+                    暂无执行者
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -4958,8 +5154,8 @@ function GanttKanbanView({
             <div className="flex items-center justify-between mb-2">
               <span className="text-sm font-bold" style={{ color: '#1F2937' }}>{project.name}</span>
               <span className="text-xs px-1.5 py-0.5 rounded" style={{
-                backgroundColor: project.completionRate >= 80 ? '#F0FFF4' : project.completionRate >= 50 ? '#FFFBEB' : '#FEF2F2',
-                color: project.completionRate >= 80 ? '#16A34A' : project.completionRate >= 50 ? '#D97706' : '#DC2626',
+                backgroundColor: '#F1F5F9',
+                color: getCompletionColor(project.completionRate),
               }}>
                 {project.completionRate}%
               </span>
@@ -4982,7 +5178,7 @@ function GanttKanbanView({
                             className="h-full rounded-full"
                             style={{
                               width: `${tester.completionRate}%`,
-                              backgroundColor: tester.completionRate >= 80 ? '#22C55E' : tester.completionRate >= 50 ? '#F97316' : '#EF4444',
+                              backgroundColor: getCompletionColor(tester.completionRate),
                             }}
                           />
                         </div>
@@ -5000,7 +5196,7 @@ function GanttKanbanView({
                                   className="h-full rounded-full"
                                   style={{
                                     width: `${moduleStat.completionRate}%`,
-                                    backgroundColor: moduleStat.incomplete > 0 ? '#F97316' : moduleStat.failed > 0 ? '#EF4444' : '#22C55E',
+                                    backgroundColor: getCompletionColor(moduleStat.completionRate),
                                   }}
                                 />
                               </div>

@@ -153,10 +153,6 @@ export async function GET(request: NextRequest) {
       const projectAllTesterNames = [...new Set(
         moduleNodes.flatMap(m => m.children?.map(c => c.testerName).filter(Boolean) ?? [])
       )];
-      // Project: only show if ALL cases have the same tester (1 unique name)
-      const projectResolvedTesterNames = projectAllTesterNames.length === 1
-        ? projectAllTesterNames[0]
-        : undefined;
 
       tree.push({
         id: `project-${project.id}`,
@@ -166,7 +162,7 @@ export async function GET(request: NextRequest) {
         children: moduleNodes,
         testerId: projectTester?.userId,
         testerName: projectTester?.testerName,
-        resolvedTesterNames: projectResolvedTesterNames,
+        resolvedTesterNames: projectAllTesterNames.length > 0 ? projectAllTesterNames.join('、') : undefined,
         isArchived: !!(project as Record<string, unknown>).is_archived,
       });
     }

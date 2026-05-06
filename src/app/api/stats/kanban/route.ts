@@ -45,6 +45,10 @@ function normalizeText(value: string | null | undefined, fallback = '未填写')
   return value && value.trim() ? value.trim() : fallback;
 }
 
+function compareNames(a: string, b: string) {
+  return a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
+}
+
 export async function GET() {
   try {
     const user = await getCurrentUser();
@@ -243,19 +247,9 @@ export async function GET() {
           ...tester,
           completionRate: roundRate(tester.completed, tester.total),
           passRate: roundRate(tester.passed, tester.completed),
-          modules: tester.modules.sort((a, b) => {
-            if (b.failed !== a.failed) return b.failed - a.failed;
-            if (b.blocked !== a.blocked) return b.blocked - a.blocked;
-            if (b.incomplete !== a.incomplete) return b.incomplete - a.incomplete;
-            return a.moduleName.localeCompare(b.moduleName, 'zh-CN');
-          }),
+          modules: tester.modules.sort((a, b) => compareNames(a.moduleName, b.moduleName)),
         }))
-        .sort((a, b) => {
-          if (b.failed !== a.failed) return b.failed - a.failed;
-          if (b.blocked !== a.blocked) return b.blocked - a.blocked;
-          if (b.incomplete !== a.incomplete) return b.incomplete - a.incomplete;
-          return a.username.localeCompare(b.username, 'zh-CN');
-        });
+        .sort((a, b) => compareNames(a.username, b.username));
 
       const projectIncomplete = projectTotal - projectCompleted;
       const completionRate = roundRate(projectCompleted, projectTotal);

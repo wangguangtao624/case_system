@@ -6,6 +6,9 @@ const DEFAULT_PREFERENCES = {
   startDate: '',
   periodMonths: 6,
   granularity: 'week',
+  sortByStartDate: false,
+  showOnlyIncompleteModules: false,
+  selectedProjectId: null as number | null,
 };
 
 function getPreferenceKey(userId: number) {
@@ -27,6 +30,9 @@ export async function GET() {
       startDate?: string;
       periodMonths?: number;
       granularity?: 'day' | 'week' | 'month';
+      sortByStartDate?: boolean;
+      showOnlyIncompleteModules?: boolean;
+      selectedProjectId?: number | null;
     };
 
     return NextResponse.json({
@@ -38,6 +44,15 @@ export async function GET() {
         granularity: parsed.granularity === 'month'
           ? 'month'
           : DEFAULT_PREFERENCES.granularity,
+        sortByStartDate: typeof parsed.sortByStartDate === 'boolean'
+          ? parsed.sortByStartDate
+          : DEFAULT_PREFERENCES.sortByStartDate,
+        showOnlyIncompleteModules: typeof parsed.showOnlyIncompleteModules === 'boolean'
+          ? parsed.showOnlyIncompleteModules
+          : DEFAULT_PREFERENCES.showOnlyIncompleteModules,
+        selectedProjectId: typeof parsed.selectedProjectId === 'number'
+          ? parsed.selectedProjectId
+          : DEFAULT_PREFERENCES.selectedProjectId,
       },
     });
   } catch (error) {
@@ -55,6 +70,9 @@ export async function PUT(request: NextRequest) {
       startDate?: string;
       periodMonths?: number;
       granularity?: 'day' | 'week' | 'month';
+      sortByStartDate?: boolean;
+      showOnlyIncompleteModules?: boolean;
+      selectedProjectId?: number | null;
     };
 
     const preferences = {
@@ -65,6 +83,15 @@ export async function PUT(request: NextRequest) {
       granularity: body.granularity === 'month'
         ? 'month'
         : DEFAULT_PREFERENCES.granularity,
+      sortByStartDate: typeof body.sortByStartDate === 'boolean'
+        ? body.sortByStartDate
+        : DEFAULT_PREFERENCES.sortByStartDate,
+      showOnlyIncompleteModules: typeof body.showOnlyIncompleteModules === 'boolean'
+        ? body.showOnlyIncompleteModules
+        : DEFAULT_PREFERENCES.showOnlyIncompleteModules,
+      selectedProjectId: typeof body.selectedProjectId === 'number'
+        ? body.selectedProjectId
+        : DEFAULT_PREFERENCES.selectedProjectId,
     };
 
     const db = getDb();
