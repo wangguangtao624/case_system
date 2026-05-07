@@ -55,8 +55,20 @@ export async function GET(
     // Check if current user is the assigned tester for this case
     const isAssignedTester = testerInfo?.tester_id === user.id;
 
+    // Check if project is archived
+    const projectData = db.prepare('SELECT is_archived FROM projects WHERE id = ?').get((caseData as Record<string, unknown>).project_id as number) as { is_archived: number } | undefined;
+    const isArchived = projectData?.is_archived === 1;
+
+    let canEditCore = isManager;
+    let canEditResult = isManager || isAssignedTester;
+
+    if (isArchived && !isManager) {
+      canEditCore = false;
+      canEditResult = false;
+    }
+
     return NextResponse.json({
-      case: caseData,
+      case: { ...(caseData as Record<string, unknown>), is_archived: isArchived ? 1 : 0 },
       files,
       tester: testerInfo?.tester_id ? {
         id: testerInfo.tester_id,
@@ -66,8 +78,8 @@ export async function GET(
       permissions: {
         isManager,
         isAssignedTester,
-        canEditCore: isManager,
-        canEditResult: isManager || isAssignedTester,
+        canEditCore,
+        canEditResult,
       },
     });
   } catch (error) {

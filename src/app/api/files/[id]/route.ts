@@ -65,7 +65,7 @@ export async function DELETE(
 
     const db = getDb();
     const file = db.prepare(`
-      SELECT f.* FROM files f
+      SELECT f.*, p.is_archived FROM files f
       JOIN cases c ON f.case_id = c.id
       JOIN modules m ON c.module_id = m.id
       JOIN projects p ON m.project_id = p.id
@@ -73,9 +73,17 @@ export async function DELETE(
     `).get(fileId) as {
       id: number;
       storage_path: string;
+      is_archived: number;
     } | undefined;
 
     if (!file) return NextResponse.json({ error: '文件不存在' }, { status: 404 });
+
+    if (file.is_archived === 1) {
+      const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+      if (!MANAGER_USERNAMES.includes(user.username)) {
+        return NextResponse.json({ error: '归档项目不允许删除文件' }, { status: 403 });
+      }
+    }
 
     try {
       if (fs.existsSync(file.storage_path)) fs.unlinkSync(file.storage_path);
@@ -105,6 +113,22 @@ export async function PUT(
     if (!originalName) return NextResponse.json({ error: '参数错误' }, { status: 400 });
 
     const db = getDb();
+
+    const fileCheck = db.prepare(`
+      SELECT p.is_archived FROM files f
+      JOIN cases c ON f.case_id = c.id
+      JOIN modules m ON c.module_id = m.id
+      JOIN projects p ON m.project_id = p.id
+      WHERE f.id = ?
+    `).get(fileId) as { is_archived: number } | undefined;
+
+    if (fileCheck?.is_archived === 1) {
+      const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+      if (!MANAGER_USERNAMES.includes(user.username)) {
+        return NextResponse.json({ error: '归档项目不允许重命名文件' }, { status: 403 });
+      }
+    }
+
     db.prepare('UPDATE files SET original_name = ? WHERE id = ?').run(originalName, fileId);
 
     return NextResponse.json({ success: true });

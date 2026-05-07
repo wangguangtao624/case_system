@@ -22,14 +22,21 @@ export async function POST(request: NextRequest) {
     // Verify case exists
     const db = getDb();
     const caseExists = db.prepare(`
-      SELECT c.id FROM cases c
+      SELECT c.id, p.is_archived FROM cases c
       JOIN modules m ON c.module_id = m.id
       JOIN projects p ON m.project_id = p.id
       WHERE c.id = ?
-    `).get(Number(caseId));
+    `).get(Number(caseId)) as { id: number; is_archived: number } | undefined;
 
     if (!caseExists) {
       return NextResponse.json({ error: '用例不存在' }, { status: 404 });
+    }
+
+    if (caseExists.is_archived === 1) {
+      const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+      if (!MANAGER_USERNAMES.includes(user.username)) {
+        return NextResponse.json({ error: '归档项目不允许上传文件' }, { status: 403 });
+      }
     }
 
     const storagePath = getStoragePath();

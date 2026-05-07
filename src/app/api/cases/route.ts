@@ -116,6 +116,13 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '模块不存在' }, { status: 404 });
     }
 
+    const archivedRow = db.prepare(`
+      SELECT p.is_archived FROM projects p
+      JOIN modules m ON m.project_id = p.id
+      WHERE m.id = ?
+    `).get(caseRow.module_id) as { is_archived: number } | undefined;
+    const isArchived = archivedRow?.is_archived === 1;
+
     const manager = isManager(user.username);
 
     if (manager) {
@@ -175,6 +182,9 @@ export async function PUT(request: NextRequest) {
       }
     } else {
       // Tester: can only edit specific fields on assigned cases
+      if (isArchived) {
+        return NextResponse.json({ error: '归档项目不允许修改测试结果' }, { status: 403 });
+      }
       const tester = resolveCaseTester(db, id);
       if (!tester || tester.userId !== user.id) {
         return NextResponse.json({ error: '无编辑权限，该用例未分配给你' }, { status: 403 });

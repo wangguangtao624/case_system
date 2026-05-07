@@ -64,6 +64,7 @@ interface CaseData {
   module_id: number;
   project_name: string;
   project_id: number;
+  is_archived?: number;
 }
 
 interface FileData {
@@ -200,6 +201,14 @@ export default function DashboardPage() {
   const [showKanban, setShowKanban] = useState(false);
   const [kanbanData, setKanbanData] = useState<KanbanGanttData | null>(null);
   const [kanbanLoading, setKanbanLoading] = useState(false);
+  // Bug Report
+  const [showBugReport, setShowBugReport] = useState(false);
+  const [showBugPanel, setShowBugPanel] = useState(false);
+  const [bugTitle, setBugTitle] = useState('');
+  const [bugDescription, setBugDescription] = useState('');
+  const [bugSubmitting, setBugSubmitting] = useState(false);
+  const [bugMsg, setBugMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [bugHover, setBugHover] = useState(false);
   // Dialogs
   const [showUserMgmt, setShowUserMgmt] = useState(false);
   const [showChangePwd, setShowChangePwd] = useState(false);
@@ -280,7 +289,7 @@ export default function DashboardPage() {
         if (data.user) {
           setUser(data.user);
           setIsManager(MANAGER_USERNAMES.includes(data.user.username));
-          loadTree();
+          loadTree('', 'active');
           // Load all users for tester filter and assignment
           fetch('/api/users').then(r => r.json()).then(d => {
             if (d.users) setAllUsers(d.users);
@@ -486,6 +495,31 @@ export default function DashboardPage() {
     }
   };
 
+  const handleBugSubmit = async () => {
+    if (!bugTitle.trim()) { setBugMsg({ type: 'error', text: '请输入标题' }); return; }
+    setBugSubmitting(true);
+    try {
+      const res = await fetch('/api/bugs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: bugTitle.trim(), description: bugDescription.trim() }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setBugMsg({ type: 'success', text: '提交成功！' });
+        setBugTitle('');
+        setBugDescription('');
+        setTimeout(() => { setShowBugReport(false); setBugMsg(null); }, 1200);
+      } else {
+        setBugMsg({ type: 'error', text: data.error || '提交失败' });
+      }
+    } catch {
+      setBugMsg({ type: 'error', text: '网络错误' });
+    } finally {
+      setBugSubmitting(false);
+    }
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#F5F5F5' }}>
@@ -531,6 +565,13 @@ export default function DashboardPage() {
               </button>
             </>
           )}
+          <button
+            onClick={() => setShowBugPanel(!showBugPanel)}
+            className="px-3 py-1.5 text-xs rounded hover:bg-gray-100 transition-colors"
+            style={{ color: '#EF4444' }}
+          >
+            {user.username === '王光涛' ? '问题处理' : '问题看板'}
+          </button>
           <button
             onClick={() => setShowChangePwd(true)}
             className="px-3 py-1.5 text-xs rounded hover:bg-gray-100 transition-colors"
@@ -814,6 +855,121 @@ export default function DashboardPage() {
       )}
 
       {/* Archive Space Dialog */}
+      {/* Floating Bug Report Ball */}
+      {user && (
+        <>
+          <div
+            className="fixed z-40 cursor-pointer select-none"
+            style={{ right: '0px', top: '50%', transform: 'translateY(-50%)' }}
+            onMouseEnter={() => setBugHover(true)}
+            onMouseLeave={() => setBugHover(false)}
+            onClick={() => { setShowBugReport(true); setBugTitle(''); setBugDescription(''); setBugMsg(null); }}
+          >
+            <div
+              className="flex items-center transition-all duration-300 rounded-l-full shadow-lg"
+              style={{
+                backgroundColor: bugHover ? '#005BB5' : '#0073E6',
+                padding: bugHover ? '10px 16px 10px 12px' : '10px 8px 10px 12px',
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+              </svg>
+              {bugHover && (
+                <span className="text-xs font-medium text-white whitespace-nowrap ml-1.5" style={{ animation: 'fadeIn 0.2s ease' }}>
+                  提交BUG/需求
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Bug Report Dialog */}
+          {showBugReport && createPortal(
+            <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}>
+              <div className="bg-white rounded-xl shadow-2xl w-[460px] max-h-[80vh] overflow-hidden" style={{ animation: 'fadeIn 0.2s ease' }}>
+                <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: '#EEEEEE' }}>
+                  <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: '#FEF2F2' }}>
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" />
+                      </svg>
+                    </div>
+                    <div>
+                      <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>提交BUG/需求</h3>
+                      <p className="text-xs" style={{ color: '#9CA3AF' }}>反馈问题或提出改进建议</p>
+                    </div>
+                  </div>
+                  <button onClick={() => { setShowBugReport(false); setBugMsg(null); }} className="p-1 rounded hover:bg-gray-100">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                  </button>
+                </div>
+                <div className="px-6 py-4 space-y-4">
+                  {bugMsg && (
+                    <div className="px-3 py-2 rounded-md text-sm" style={{
+                      backgroundColor: bugMsg.type === 'success' ? '#F0FFF4' : '#FFF5F5',
+                      color: bugMsg.type === 'success' ? '#16A34A' : '#DC2626',
+                      border: `1px solid ${bugMsg.type === 'success' ? '#BBF7D0' : '#FECACA'}`,
+                    }}>
+                      {bugMsg.text}
+                    </div>
+                  )}
+                  <div>
+                    <label className="block text-sm font-medium mb-1" style={{ color: '#374151' }}>
+                      标题 <span style={{ color: '#EF4444' }}>*</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={bugTitle}
+                      onChange={(e) => setBugTitle(e.target.value)}
+                      placeholder="简述问题或需求，如：登录页面按钮错位"
+                      className="w-full px-3 py-2 text-sm border rounded-md focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      style={{ borderColor: '#D1D5DB' }}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1" style={{ color: '#374151' }}>详细描述</label>
+                    <textarea
+                      value={bugDescription}
+                      onChange={(e) => setBugDescription(e.target.value)}
+                      placeholder="请描述问题复现步骤、截图位置或需求详细说明..."
+                      className="w-full px-3 py-2 text-sm border rounded-md resize-none focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      style={{ borderColor: '#D1D5DB', minHeight: '120px' }}
+                    />
+                  </div>
+                </div>
+                <div className="px-6 py-3 border-t flex justify-between items-center" style={{ borderColor: '#EEEEEE' }}>
+                  <span className="text-xs" style={{ color: '#9CA3AF' }}>提交者: {user.username}</span>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => { setShowBugReport(false); setBugMsg(null); }}
+                      className="px-4 py-2 text-sm rounded border hover:bg-gray-50"
+                      style={{ borderColor: '#D1D5DB', color: '#374151' }}
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={handleBugSubmit}
+                      disabled={bugSubmitting}
+                      className="px-4 py-2 text-sm rounded text-white hover:opacity-90 disabled:opacity-50"
+                      style={{ backgroundColor: '#EF4444' }}
+                    >
+                      {bugSubmitting ? '提交中...' : '提交'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>,
+            document.body
+          )}
+
+          {/* Bug Management Panel */}
+          <BugManagementPanel
+            show={showBugPanel}
+            onToggle={() => setShowBugPanel(!showBugPanel)}
+            canManage={user.username === '王光涛'}
+          />
+        </>
+      )}
     </div>
   );
 }
@@ -1118,7 +1274,7 @@ function SidebarTree({
     return (
       <div key={node.id}>
         <div
-          className="flex items-center py-1 px-2 cursor-pointer group text-sm select-none"
+          className="flex items-start py-1 px-2 cursor-pointer group text-sm select-none"
           style={{
             paddingLeft: `${paddingLeft}px`,
             backgroundColor: isSelected ? '#E6F2FF' : 'transparent',
@@ -1135,7 +1291,7 @@ function SidebarTree({
           onMouseLeave={(e) => { if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent'; }}
         >
           {/* Expand/Collapse icon */}
-          <span className="w-4 h-4 flex items-center justify-center mr-1 flex-shrink-0" onClick={(e) => { e.stopPropagation(); toggleExpand(node.id); }}>
+          <span className="w-4 h-4 flex items-center justify-center mr-1 mt-0.5 self-start flex-shrink-0" onClick={(e) => { e.stopPropagation(); toggleExpand(node.id); }}>
             {hasChildren ? (
               isExpanded ? (
                 <span style={{ fontSize: '10px', color: '#666' }}>&#9660;</span>
@@ -1149,7 +1305,7 @@ function SidebarTree({
 
           {/* Status icon for cases */}
           {node.type === 'case' && (
-            <span className="w-4 h-4 flex items-center justify-center mr-1 flex-shrink-0">
+            <span className="w-4 h-4 flex items-center justify-center mr-1 mt-0.5 self-start flex-shrink-0">
               {getStatusIcon(node.testResult)}
             </span>
           )}
@@ -2660,16 +2816,20 @@ function CaseDetail({
                   >
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                   </button>
-                  <button type="button" className="p-1 rounded hover:bg-gray-100" title="重命名"
-                    onClick={() => setRenamingFile({ id: file.id, name: file.original_name })}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
-                  </button>
-                  <button type="button" className="p-1 rounded hover:bg-red-50" title="删除"
-                    onClick={() => handleDeleteFile(file.id)}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
-                  </button>
+                  {canEditResult && (
+                    <>
+                      <button type="button" className="p-1 rounded hover:bg-gray-100" title="重命名"
+                        onClick={() => setRenamingFile({ id: file.id, name: file.original_name })}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
+                      </button>
+                      <button type="button" className="p-1 rounded hover:bg-red-50" title="删除"
+                        onClick={() => handleDeleteFile(file.id)}
+                      >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                      </button>
+                    </>
+                  )}
                 </div>
               </div>
             ))}
@@ -5167,7 +5327,7 @@ function GanttKanbanView({
             )}
             {project.testers.length > 0 && (
               <div>
-                <div className="text-xs font-semibold mb-1.5" style={{ color: '#374151' }}>执行者进度</div>
+                <div className="text-xs font-semibold mb-1.5" style={{ color: '#374151' }}>执行者总体进度</div>
                 <div className="space-y-1.5">
                   {project.testers.map(tester => (
                     <div key={tester.userId} className="rounded border px-2 py-2" style={{ borderColor: '#F3F4F6' }}>
@@ -5184,29 +5344,9 @@ function GanttKanbanView({
                         </div>
                         <span className="text-xs flex-shrink-0" style={{ color: '#6B7280', width: '36px', textAlign: 'right' }}>{tester.completionRate}%</span>
                       </div>
-                      {tester.modules.length > 0 && (
-                        <div className="mt-1.5 space-y-1">
-                          {tester.modules.slice(0, 3).map(moduleStat => (
-                            <div key={`${tester.userId}-${moduleStat.key}`} className="flex items-center gap-2">
-                              <span className="text-[11px] truncate flex-shrink-0" style={{ color: '#6B7280', width: '132px' }}>
-                                {moduleStat.moduleName}
-                              </span>
-                              <div className="flex-1 h-2 rounded-full overflow-hidden" style={{ backgroundColor: '#E5E7EB' }}>
-                                <div
-                                  className="h-full rounded-full"
-                                  style={{
-                                    width: `${moduleStat.completionRate}%`,
-                                    backgroundColor: getCompletionColor(moduleStat.completionRate),
-                                  }}
-                                />
-                              </div>
-                              <span className="text-[11px]" style={{ color: '#6B7280', width: '52px', textAlign: 'right' }}>
-                                {moduleStat.completed}/{moduleStat.total}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      )}
+                      <div className="mt-1.5 text-[11px]" style={{ color: '#6B7280' }}>
+                        完成 {tester.completed}/{tester.total} · 失败 {tester.failed} · 阻塞 {tester.blocked}
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -5267,6 +5407,265 @@ function GanttKanbanView({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ============ Bug Management Panel ============
+function BugManagementPanel({
+  show,
+  onToggle,
+  canManage,
+}: {
+  show: boolean;
+  onToggle: () => void;
+  canManage: boolean;
+}) {
+  const [bugs, setBugs] = useState<Array<{
+    id: number;
+    title: string;
+    description: string;
+    reporter_name: string;
+    status: string;
+    resolver_name: string | null;
+    resolve_note: string;
+    resolved_at: string | null;
+    created_at: string;
+  }>>([]);
+  const [filter, setFilter] = useState<'open' | 'resolved' | 'all'>('open');
+  const [resolveNote, setResolveNote] = useState('');
+  const [resolvingId, setResolvingId] = useState<number | null>(null);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const loadBugs = useCallback(async () => {
+    try {
+      const res = await fetch('/api/bugs');
+      const data = await res.json();
+      if (data.bugs) setBugs(data.bugs);
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (show) loadBugs();
+  }, [show, loadBugs]);
+
+  const handleResolve = async (bugId: number) => {
+    if (!canManage) return;
+    try {
+      const res = await fetch('/api/bugs', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: bugId, status: 'resolved', resolveNote }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMessage({ type: 'success', text: '已标记为解决' });
+        setResolvingId(null);
+        setResolveNote('');
+        loadBugs();
+      } else {
+        setMessage({ type: 'error', text: data.error || '操作失败' });
+      }
+    } catch {
+      setMessage({ type: 'error', text: '网络错误' });
+    }
+    setTimeout(() => setMessage(null), 1000);
+  };
+
+  const handleReopen = async (bugId: number) => {
+    if (!canManage) return;
+    try {
+      const res = await fetch('/api/bugs', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: bugId, status: 'open' }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        setMessage({ type: 'success', text: '已重新打开' });
+        loadBugs();
+      }
+    } catch { /* ignore */ }
+    setTimeout(() => setMessage(null), 1000);
+  };
+
+  const handleDelete = async (bugId: number) => {
+    if (!canManage) return;
+    if (!confirm('确定要删除此问题单吗？')) return;
+    try {
+      const res = await fetch(`/api/bugs?id=${bugId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        setMessage({ type: 'success', text: '已删除' });
+        loadBugs();
+      }
+    } catch { /* ignore */ }
+    setTimeout(() => setMessage(null), 1000);
+  };
+
+  if (!show) return null;
+
+  const visibleBugs = bugs.filter(b => filter === 'all' || b.status === filter);
+  const counts = {
+    open: bugs.filter(b => b.status === 'open').length,
+    resolved: bugs.filter(b => b.status === 'resolved').length,
+    all: bugs.length,
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}>
+      <div className="bg-white rounded-xl shadow-2xl w-[700px] max-h-[80vh] overflow-hidden" style={{ animation: 'fadeIn 0.2s ease' }}>
+        <div className="px-6 py-4 border-b flex items-center justify-between" style={{ borderColor: '#EEEEEE' }}>
+          <div className="flex items-center gap-2">
+            <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: '#FEF2F2' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="10" /><path d="M12 8v4" /><path d="M12 16h.01" />
+              </svg>
+            </div>
+            <div>
+              <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>{canManage ? '问题单管理' : '问题单看板'}</h3>
+              <p className="text-xs" style={{ color: '#9CA3AF' }}>
+                {canManage ? '处理用户提交的BUG和需求' : '查看当前问题单处理进展'}
+              </p>
+            </div>
+          </div>
+          <button onClick={onToggle} className="p-1 rounded hover:bg-gray-100">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          </button>
+        </div>
+
+        <div className="px-6 py-3 border-b flex items-center gap-2" style={{ borderColor: '#EEEEEE' }}>
+          {(['open', 'all', 'resolved'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className="px-3 py-1 text-xs rounded-full transition-colors"
+              style={{
+                backgroundColor: filter === f ? (f === 'open' ? '#FEF2F2' : f === 'resolved' ? '#F0FFF4' : '#F3F4F6') : 'transparent',
+                color: filter === f ? (f === 'open' ? '#DC2626' : f === 'resolved' ? '#16A34A' : '#374151') : '#6B7280',
+                border: `1px solid ${filter === f ? (f === 'open' ? '#FECACA' : f === 'resolved' ? '#BBF7D0' : '#D1D5DB') : '#E5E7EB'}`,
+              }}
+            >
+              {f === 'open' ? '待处理' : f === 'resolved' ? '已解决' : '全部'} ({counts[f]})
+            </button>
+          ))}
+        </div>
+
+        <div className="px-6 py-3 overflow-auto" style={{ maxHeight: '55vh' }}>
+          {message && (
+            <div className="mb-3 px-3 py-2 rounded-md text-sm" style={{
+              backgroundColor: message.type === 'success' ? '#F0FFF4' : '#FFF5F5',
+              color: message.type === 'success' ? '#16A34A' : '#DC2626',
+            }}>
+              {message.text}
+            </div>
+          )}
+          {visibleBugs.length === 0 ? (
+            <div className="text-center py-8 text-sm" style={{ color: '#9CA3AF' }}>
+              {filter === 'open' ? '暂无待处理的问题' : filter === 'resolved' ? '暂无已解决的问题' : '暂无问题单'}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {visibleBugs.map(bug => (
+                <div key={bug.id} className="border rounded-lg p-3 hover:shadow-sm transition-shadow" style={{ borderColor: bug.status === 'resolved' ? '#D1FAE5' : '#FECACA' }}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span
+                          className="inline-block px-1.5 py-0.5 text-xs rounded"
+                          style={{
+                            backgroundColor: bug.status === 'resolved' ? '#F0FFF4' : '#FEF2F2',
+                            color: bug.status === 'resolved' ? '#16A34A' : '#DC2626',
+                          }}
+                        >
+                          {bug.status === 'resolved' ? '已解决' : '待处理'}
+                        </span>
+                        <span className="text-xs" style={{ color: '#9CA3AF' }}>#{bug.id}</span>
+                      </div>
+                      <p className="text-sm font-medium truncate" style={{ color: '#1F2937' }}>{bug.title}</p>
+                      {bug.description && (
+                        <p className="text-xs mt-1 line-clamp-2" style={{ color: '#6B7280' }}>{bug.description}</p>
+                      )}
+                      <div className="flex items-center gap-3 mt-2 text-xs" style={{ color: '#9CA3AF' }}>
+                        <span>提交者: {bug.reporter_name}</span>
+                        <span>{bug.created_at}</span>
+                        {bug.status === 'resolved' && bug.resolver_name && (
+                          <span style={{ color: '#16A34A' }}>处理人: {bug.resolver_name} ({bug.resolved_at})</span>
+                        )}
+                      </div>
+                      {bug.resolve_note && (
+                        <div className="mt-1.5 px-2 py-1 rounded text-xs" style={{ backgroundColor: '#F0FFF4', color: '#16A34A', border: '1px solid #D1FAE5' }}>
+                          备注: {bug.resolve_note}
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      {canManage && bug.status === 'open' && (
+                        resolvingId === bug.id ? (
+                          <div className="flex flex-col gap-1" style={{ minWidth: '200px' }}>
+                            <input
+                              autoFocus
+                              type="text"
+                              value={resolveNote}
+                              onChange={(e) => setResolveNote(e.target.value)}
+                              placeholder="备注（可选）"
+                              className="px-2 py-1 text-xs border rounded"
+                              style={{ borderColor: '#D1D5DB' }}
+                              onKeyDown={(e) => { if (e.key === 'Enter') handleResolve(bug.id); if (e.key === 'Escape') { setResolvingId(null); setResolveNote(''); } }}
+                            />
+                            <div className="flex gap-1">
+                              <button
+                                onClick={() => handleResolve(bug.id)}
+                                className="px-2 py-0.5 text-xs rounded text-white"
+                                style={{ backgroundColor: '#16A34A' }}
+                              >
+                                确认解决
+                              </button>
+                              <button
+                                onClick={() => { setResolvingId(null); setResolveNote(''); }}
+                                className="px-2 py-0.5 text-xs rounded border"
+                                style={{ borderColor: '#D1D5DB', color: '#6B7280' }}
+                              >
+                                取消
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => setResolvingId(bug.id)}
+                            className="px-2 py-1 text-xs rounded hover:bg-green-50 transition-colors"
+                            style={{ color: '#16A34A', border: '1px solid #BBF7D0' }}
+                          >
+                            标记解决
+                          </button>
+                        )
+                      )}
+                      {canManage && bug.status === 'resolved' && (
+                        <button
+                          onClick={() => handleReopen(bug.id)}
+                          className="px-2 py-1 text-xs rounded hover:bg-yellow-50 transition-colors"
+                          style={{ color: '#D97706', border: '1px solid #FDE68A' }}
+                        >
+                          重新打开
+                        </button>
+                      )}
+                      {canManage && (
+                        <button
+                          onClick={() => handleDelete(bug.id)}
+                          className="p-1 rounded hover:bg-red-50 transition-colors"
+                          title="删除"
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

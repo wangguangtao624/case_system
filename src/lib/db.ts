@@ -206,6 +206,60 @@ function initializeDatabase(db: Database.Database) {
     db.exec(`ALTER TABLE projects ADD COLUMN end_date TEXT DEFAULT NULL`);
   } catch { /* column already exists */ }
 
+  // Migration: create bugs table
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bugs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        reporter_id INTEGER NOT NULL REFERENCES users(id),
+        reporter_name TEXT NOT NULL,
+        status TEXT DEFAULT 'open',
+        resolver_id INTEGER,
+        resolver_name TEXT,
+        resolve_note TEXT DEFAULT '',
+        resolved_at TEXT,
+        created_at TEXT DEFAULT (datetime('now', 'localtime')),
+        updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+      )
+    `);
+  } catch { /* table already exists */ }
+
+  // Migration: align legacy bugs schema with current API fields
+  try {
+    db.exec(`ALTER TABLE bugs ADD COLUMN resolver_id INTEGER`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE bugs ADD COLUMN resolver_name TEXT`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE bugs ADD COLUMN resolve_note TEXT DEFAULT ''`);
+  } catch { /* column already exists */ }
+
+  try {
+    const bugColumns = db.prepare(`PRAGMA table_info(bugs)`).all() as Array<{ name: string }>;
+    const bugColumnNames = new Set(bugColumns.map(column => column.name));
+
+    if (bugColumnNames.has('resolved_by') && bugColumnNames.has('resolver_name')) {
+      db.exec(`
+        UPDATE bugs
+        SET resolver_name = COALESCE(NULLIF(resolver_name, ''), resolved_by)
+        WHERE resolved_by IS NOT NULL AND resolved_by != ''
+      `);
+    }
+
+    if (bugColumnNames.has('resolution_note') && bugColumnNames.has('resolve_note')) {
+      db.exec(`
+        UPDATE bugs
+        SET resolve_note = COALESCE(NULLIF(resolve_note, ''), resolution_note)
+        WHERE resolution_note IS NOT NULL AND resolution_note != ''
+      `);
+    }
+  } catch { /* ignore migration errors */ }
+
   // Initialize default users if not exists
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
   if (userCount.count === 0) {
