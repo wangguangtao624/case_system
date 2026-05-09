@@ -36,6 +36,19 @@ function normalizeHeader(key: string): string {
     .toLowerCase();
 }
 
+function normalizeCaseValue(value: string | null | undefined): string {
+  return String(value ?? '').trim();
+}
+
+function buildCaseDedupKey(caseNo: string | null | undefined, caseName: string | null | undefined): string | null {
+  const normalizedNo = normalizeCaseValue(caseNo);
+  const normalizedName = normalizeCaseValue(caseName);
+
+  if (normalizedNo) return `no:${normalizedNo}`;
+  if (normalizedName) return `name:${normalizedName}`;
+  return null;
+}
+
 // Priority mapping -> English
 const PRIORITY_MAP: Record<string, string> = {
   'high': 'High', 'middle': 'Middle', 'low': 'Low',
@@ -139,9 +152,17 @@ export async function POST(request: NextRequest) {
         moduleId = Number(result.lastInsertRowid);
       }
 
-      // Get existing case names for dedup
-      const existingCases = db.prepare('SELECT case_name FROM cases WHERE module_id = ?').all(moduleId) as { case_name: string }[];
-      const existingCaseNames = new Set(existingCases.map(c => c.case_name));
+      // Prefer case_no for dedup because the same sheet can legitimately contain
+      // multiple cases with the same case_name but different identifiers.
+      const existingCases = db.prepare('SELECT case_no, case_name FROM cases WHERE module_id = ?').all(moduleId) as {
+        case_no: string | null;
+        case_name: string | null;
+      }[];
+      const existingCaseKeys = new Set(
+        existingCases
+          .map(c => buildCaseDedupKey(c.case_no, c.case_name))
+          .filter((key): key is string => !!key)
+      );
 
       // Parse column headers
       const firstRow = rows[0];
@@ -214,8 +235,14 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
+        const caseKey = buildCaseDedupKey(caseData.case_no, caseName);
+        if (!caseKey) {
+          totalSkipped++;
+          continue;
+        }
+
         // Dedup check
-        if (existingCaseNames.has(caseName)) {
+        if (existingCaseKeys.has(caseKey)) {
           totalSkipped++;
           continue;
         }
@@ -269,7 +296,7 @@ export async function POST(request: NextRequest) {
             }
           }
 
-          existingCaseNames.add(caseName);
+          existingCaseKeys.add(caseKey);
           totalImported++;
         } catch (err) {
           errors.push(`Sheet「${sheetName}」用例「${caseName}」导入失败：${err instanceof Error ? err.message : '未知错误'}`);
