@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 
@@ -49,19 +49,28 @@ function compareNames(a: string, b: string) {
   return a.localeCompare(b, 'zh-CN', { numeric: true, sensitivity: 'base' });
 }
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
 
     const db = getDb();
+    const { searchParams } = new URL(request.url);
+    const priorityMode = searchParams.get('priorityMode') === 'high' ? 'high' : 'all';
 
     const activeProjects = db.prepare(`
-      SELECT p.id, p.name, p.start_date, p.end_date
+      SELECT p.id, p.name, p.start_date, p.end_date, p.high_priority_start_date, p.high_priority_end_date
       FROM projects p
       WHERE p.is_archived = 0
       ORDER BY p.sort_order, p.id
-    `).all() as { id: number; name: string; start_date: string | null; end_date: string | null }[];
+    `).all() as {
+      id: number;
+      name: string;
+      start_date: string | null;
+      end_date: string | null;
+      high_priority_start_date: string | null;
+      high_priority_end_date: string | null;
+    }[];
 
     const assignments = db.prepare(`
       SELECT a.level, a.target_id, a.user_id, u.username as tester_name
@@ -141,7 +150,11 @@ export async function GET() {
           jira_link: string;
         }>;
 
-        for (const caseItem of moduleCases) {
+        const filteredCases = priorityMode === 'high'
+          ? moduleCases.filter(caseItem => caseItem.priority === 'High')
+          : moduleCases;
+
+        for (const caseItem of filteredCases) {
           const caseTester = assignmentMap.get(`case-${caseItem.id}`);
           const resolvedTester = caseTester || moduleTester || projectTester || {
             userId: 0,
@@ -255,12 +268,18 @@ export async function GET() {
       const completionRate = roundRate(projectCompleted, projectTotal);
       const passRate = roundRate(projectPassed, projectCompleted);
       const blockedRate = roundRate(projectBlocked, projectTotal);
+      const startDate = priorityMode === 'high' ? project.high_priority_start_date : project.start_date;
+      const endDate = priorityMode === 'high' ? project.high_priority_end_date : project.end_date;
 
       return {
         id: project.id,
         name: project.name,
-        startDate: project.start_date,
-        endDate: project.end_date,
+        startDate,
+        endDate,
+        allStartDate: project.start_date,
+        allEndDate: project.end_date,
+        highPriorityStartDate: project.high_priority_start_date,
+        highPriorityEndDate: project.high_priority_end_date,
         total: projectTotal,
         completed: projectCompleted,
         incomplete: projectIncomplete,
@@ -273,7 +292,7 @@ export async function GET() {
         testers,
         cases,
       };
-    });
+    }).filter(project => priorityMode === 'all' || project.total > 0);
 
     const overallTotal = projectStats.reduce((sum, project) => sum + project.total, 0);
     const overallCompleted = projectStats.reduce((sum, project) => sum + project.completed, 0);
@@ -282,9 +301,10 @@ export async function GET() {
     const overallBlocked = projectStats.reduce((sum, project) => sum + project.blocked, 0);
 
     return NextResponse.json({
+      priorityMode,
       projects: projectStats,
       summary: {
-        projectCount: activeProjects.length,
+        projectCount: projectStats.length,
         total: overallTotal,
         completed: overallCompleted,
         incomplete: overallTotal - overallCompleted,

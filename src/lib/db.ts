@@ -206,6 +206,15 @@ function initializeDatabase(db: Database.Database) {
     db.exec(`ALTER TABLE projects ADD COLUMN end_date TEXT DEFAULT NULL`);
   } catch { /* column already exists */ }
 
+  // Migration: add independent gantt dates for high-priority-only view
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN high_priority_start_date TEXT DEFAULT NULL`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN high_priority_end_date TEXT DEFAULT NULL`);
+  } catch { /* column already exists */ }
+
   // Migration: create bugs table
   try {
     db.exec(`

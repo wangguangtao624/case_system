@@ -8,9 +8,6 @@ function isManager(username: string): boolean {
   return MANAGER_USERNAMES.includes(username);
 }
 
-// Fields that testers are allowed to edit
-const TESTER_EDITABLE_FIELDS = ['test_device', 'test_result', 'jira_link', 'test_result_note', 'test_log'];
-
 // Helper: check if module exists
 function moduleExists(db: ReturnType<typeof import('@/lib/db').getDb>, moduleId: number): boolean {
   const row = db.prepare('SELECT id FROM modules WHERE id = ?').get(moduleId);
@@ -159,26 +156,13 @@ export async function PUT(request: NextRequest) {
         }
       } else {
         // save result fields
-        const EXCLUDED_EXECUTORS = ['admin', '张宇慧', '刘济聪'];
-        const executor = EXCLUDED_EXECUTORS.includes(user.username) ? undefined : user.username;
-
-        if (executor) {
-          db.prepare(`
-            UPDATE cases SET 
-              test_device = ?, test_result = ?, jira_link = ?, fail_note = ?, test_log = ?,
-              test_result_note = ?,
-              executor = ?, updated_at = datetime('now', 'localtime')
-            WHERE id = ?
-          `).run(test_device || '', test_result, jira_link, fail_note || '', test_log || '', test_result_note || '', executor, id);
-        } else {
-          db.prepare(`
-            UPDATE cases SET 
-              test_device = ?, test_result = ?, jira_link = ?, fail_note = ?, test_log = ?,
-              test_result_note = ?,
-              updated_at = datetime('now', 'localtime')
-            WHERE id = ?
-          `).run(test_device || '', test_result, jira_link, fail_note || '', test_log || '', test_result_note || '', id);
-        }
+        db.prepare(`
+          UPDATE cases SET 
+            test_device = ?, test_result = ?, jira_link = ?, fail_note = ?, test_log = ?,
+            test_result_note = ?,
+            executor = ?, updated_at = datetime('now', 'localtime')
+          WHERE id = ?
+        `).run(test_device || '', test_result, jira_link, fail_note || '', test_log || '', test_result_note || '', user.username, id);
       }
     } else {
       // Tester: can only edit specific fields on assigned cases
@@ -193,26 +177,13 @@ export async function PUT(request: NextRequest) {
       // Only allow tester-editable fields
       const { test_device, test_result, jira_link, fail_note, test_log, test_result_note } = data;
 
-      const EXCLUDED_EXECUTORS = ['admin', '张宇慧', '刘济聪'];
-      const executor = EXCLUDED_EXECUTORS.includes(user.username) ? undefined : user.username;
-
-      if (executor) {
-        db.prepare(`
-          UPDATE cases SET 
-            test_device = ?, test_result = ?, jira_link = ?, fail_note = ?, test_log = ?,
-            test_result_note = ?,
-            executor = ?, updated_at = datetime('now', 'localtime')
-          WHERE id = ?
-        `).run(test_device || '', test_result, jira_link, fail_note || '', test_log || '', test_result_note || '', executor, id);
-      } else {
-        db.prepare(`
-          UPDATE cases SET 
-            test_device = ?, test_result = ?, jira_link = ?, fail_note = ?, test_log = ?,
-            test_result_note = ?,
-            updated_at = datetime('now', 'localtime')
-          WHERE id = ?
-        `).run(test_device || '', test_result, jira_link, fail_note || '', test_log || '', test_result_note || '', id);
-      }
+      db.prepare(`
+        UPDATE cases SET 
+          test_device = ?, test_result = ?, jira_link = ?, fail_note = ?, test_log = ?,
+          test_result_note = ?,
+          executor = ?, updated_at = datetime('now', 'localtime')
+        WHERE id = ?
+      `).run(test_device || '', test_result, jira_link, fail_note || '', test_log || '', test_result_note || '', user.username, id);
     }
 
     return NextResponse.json({ success: true });

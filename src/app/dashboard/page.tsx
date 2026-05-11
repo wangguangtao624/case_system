@@ -14,6 +14,7 @@ import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Toolti
 
 // ============ Permission Constants ============
 const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+type KanbanPriorityMode = 'all' | 'high';
 
 // ============ Types ============
 interface UserInfo {
@@ -146,6 +147,10 @@ interface KanbanProjectStat {
   name: string;
   startDate: string | null;
   endDate: string | null;
+  allStartDate: string | null;
+  allEndDate: string | null;
+  highPriorityStartDate: string | null;
+  highPriorityEndDate: string | null;
   total: number;
   completed: number;
   incomplete: number;
@@ -160,6 +165,7 @@ interface KanbanProjectStat {
 }
 
 interface KanbanGanttData {
+  priorityMode: KanbanPriorityMode;
   projects: KanbanProjectStat[];
   summary: {
     projectCount: number;
@@ -201,6 +207,7 @@ export default function DashboardPage() {
   const [showKanban, setShowKanban] = useState(false);
   const [kanbanData, setKanbanData] = useState<KanbanGanttData | null>(null);
   const [kanbanLoading, setKanbanLoading] = useState(false);
+  const [kanbanPriorityMode, setKanbanPriorityMode] = useState<KanbanPriorityMode>('all');
   // Bug Report
   const [showBugReport, setShowBugReport] = useState(false);
   const [showBugPanel, setShowBugPanel] = useState(false);
@@ -233,6 +240,21 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('Load tree error:', error);
       return undefined;
+    }
+  }, []);
+
+  const fetchKanbanData = useCallback(async (priorityMode: KanbanPriorityMode) => {
+    setKanbanLoading(true);
+    try {
+      const params = new URLSearchParams({ priorityMode });
+      const response = await fetch(`/api/stats/kanban?${params.toString()}`);
+      const result = await response.json();
+      setKanbanData(result);
+      setKanbanPriorityMode(result?.priorityMode === 'high' ? 'high' : 'all');
+    } catch (error) {
+      console.error('Load kanban error:', error);
+    } finally {
+      setKanbanLoading(false);
     }
   }, []);
 
@@ -626,14 +648,7 @@ export default function DashboardPage() {
                 setSelectedCase(null);
                 setSelectedNodeId(null);
                 setShowKanban(true);
-                setKanbanLoading(true);
-                fetch('/api/stats/kanban')
-                  .then(r => r.json())
-                  .then(d => {
-                    setKanbanData(d);
-                    setKanbanLoading(false);
-                  })
-                  .catch(() => setKanbanLoading(false));
+                fetchKanbanData(kanbanPriorityMode);
               }}
               onDeleteArchived={handleDeleteArchived}
             />
@@ -687,16 +702,12 @@ export default function DashboardPage() {
               data={kanbanData}
               loading={kanbanLoading}
               isManager={isManager}
+              priorityMode={kanbanPriorityMode}
+              onPriorityModeChange={fetchKanbanData}
               onClose={() => { setShowKanban(false); setKanbanData(null); }}
               onNavigateCase={handleOpenCaseById}
               onNavigateTreeNode={handleNavigateTreeNode}
-              onRefresh={() => {
-                setKanbanLoading(true);
-                fetch('/api/stats/kanban')
-                  .then(r => r.json())
-                  .then(d => { setKanbanData(d); setKanbanLoading(false); })
-                  .catch(() => setKanbanLoading(false));
-              }}
+              onRefresh={() => fetchKanbanData(kanbanPriorityMode)}
             />
           ) : selectedCase ? (
             <CaseDetail
@@ -1798,7 +1809,7 @@ function SidebarTree({
               style={{ borderColor: '#D1D5DB', color: '#374151' }}
             >
               <option value="">选择测试者...</option>
-              {allUsers.filter(u => !MANAGER_USERNAMES.includes(u.username)).map(u => (
+              {allUsers.map(u => (
                 <option key={u.id} value={String(u.id)}>{u.username}</option>
               ))}
             </select>
@@ -2435,7 +2446,7 @@ function CaseDetail({
                 {showTesterAssign && isManager && (
                   <div className="absolute right-0 top-full mt-1 bg-white rounded-md shadow-lg border z-30" style={{ minWidth: '160px', borderColor: '#DDD6FE' }}>
                     <div className="px-3 py-2 text-xs font-medium" style={{ color: '#6B7280', borderBottom: '1px solid #F0F0F0' }}>分配测试者</div>
-                    {allUsers.filter(u => !MANAGER_USERNAMES.includes(u.username)).map(u => (
+                    {allUsers.map(u => (
                       <button
                         key={u.id}
                         className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
@@ -4545,6 +4556,8 @@ function GanttKanbanView({
   data,
   loading,
   isManager,
+  priorityMode,
+  onPriorityModeChange,
   onClose,
   onNavigateCase,
   onNavigateTreeNode,
@@ -4553,6 +4566,8 @@ function GanttKanbanView({
   data: KanbanGanttData | null;
   loading: boolean;
   isManager: boolean;
+  priorityMode: KanbanPriorityMode;
+  onPriorityModeChange: (priorityMode: KanbanPriorityMode) => void;
   onClose: () => void;
   onNavigateCase: (caseId: number) => void;
   onNavigateTreeNode: (type: 'project' | 'module', dbId: number) => void;
@@ -4615,6 +4630,9 @@ function GanttKanbanView({
           if (typeof preferences.selectedProjectId === 'number') {
             setSelectedProjectId(preferences.selectedProjectId);
           }
+          if (preferences.priorityMode === 'high') {
+            onPriorityModeChange('high');
+          }
         }
       })
       .catch(() => {})
@@ -4625,7 +4643,7 @@ function GanttKanbanView({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [onPriorityModeChange]);
 
   useEffect(() => {
     if (!preferencesLoaded) return;
@@ -4640,12 +4658,13 @@ function GanttKanbanView({
           sortByStartDate,
           showOnlyIncompleteModules,
           selectedProjectId,
+          priorityMode,
         }),
       }).catch(() => {});
     }, 300);
 
     return () => window.clearTimeout(timer);
-  }, [startDate, periodMonths, granularity, sortByStartDate, showOnlyIncompleteModules, selectedProjectId, preferencesLoaded]);
+  }, [startDate, periodMonths, granularity, sortByStartDate, showOnlyIncompleteModules, selectedProjectId, priorityMode, preferencesLoaded]);
 
   const viewStartDate = new Date(startDate);
   const viewEndDate = new Date(viewStartDate);
@@ -4703,6 +4722,8 @@ function GanttKanbanView({
   const PX_PER_DAY = granularity === 'week' ? 12 : 6;
   const totalWidth = totalWidthUnits * PX_PER_DAY;
   const todayOffset = getTodayOffset();
+  const todayLabel = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const isHighPriorityMode = priorityMode === 'high';
 
   const parseDateOrMax = (dateStr: string | null) => {
     if (!dateStr) return Number.MAX_SAFE_INTEGER;
@@ -4789,6 +4810,7 @@ function GanttKanbanView({
         sortByStartDate: true,
         showOnlyIncompleteModules,
         selectedProjectId,
+        priorityMode,
       }),
     }).catch(() => {});
     onRefresh();
@@ -4805,6 +4827,7 @@ function GanttKanbanView({
           id: editingDates.id,
           start_date: editingDates.startDate || null,
           end_date: editingDates.endDate || null,
+          priorityMode,
         }),
       });
       const d = await res.json();
@@ -4859,6 +4882,27 @@ function GanttKanbanView({
 
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-4 px-6 py-2 border-b" style={{ borderColor: '#EEEEEE', backgroundColor: '#FAFBFC' }}>
+        <div className="flex items-center gap-2">
+          <label className="text-xs font-medium" style={{ color: '#374151' }}>用例范围</label>
+          <div className="flex items-center rounded border overflow-hidden" style={{ borderColor: '#D1D5DB' }}>
+            {[
+              { key: 'all', label: '全部用例' },
+              { key: 'high', label: '只看高优先级' },
+            ].map(option => (
+              <button
+                key={option.key}
+                onClick={() => onPriorityModeChange(option.key as KanbanPriorityMode)}
+                className="text-xs px-3 py-1 transition-colors"
+                style={{
+                  backgroundColor: priorityMode === option.key ? '#DC2626' : '#FFF',
+                  color: priorityMode === option.key ? '#FFF' : '#374151',
+                }}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="flex items-center gap-2">
           <label className="text-xs font-medium" style={{ color: '#374151' }}>起始日期</label>
           <input
@@ -4915,6 +4959,11 @@ function GanttKanbanView({
         >
           刷新视图
         </button>
+        {isHighPriorityMode && (
+          <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
+            当前仅统计 High 用例
+          </span>
+        )}
         <span className="text-xs" style={{ color: preferencesLoaded ? '#6B7280' : '#9CA3AF' }}>
           {preferencesLoaded ? '已按登录用户记住你的看板偏好' : '正在读取你的看板偏好...'}
         </span>
@@ -4922,11 +4971,18 @@ function GanttKanbanView({
 
       {/* Gantt Chart */}
       <div className="flex-1 overflow-auto px-6 py-4" ref={ganttContainerRef}>
-        <div style={{ minWidth: totalWidth + 260 }}>
+        <div className="relative pb-8" style={{ minWidth: totalWidth + 260 }}>
           {/* Time Header Row */}
           <div className="flex" style={{ borderBottom: '1px solid #E5E7EB' }}>
             <div className="flex-shrink-0" style={{ width: '260px' }}>
-              <div className="text-sm font-semibold px-4 py-3" style={{ color: '#374151', backgroundColor: '#F9FAFB' }}>项目名称</div>
+              <div className="flex items-center gap-2 text-sm font-semibold px-4 py-3" style={{ color: '#374151', backgroundColor: '#F9FAFB' }}>
+                <span>项目名称</span>
+                {isHighPriorityMode && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
+                    HIGH
+                  </span>
+                )}
+              </div>
             </div>
             <div className="flex-1 flex" style={{ position: 'relative' }}>
               {timeHeaders.map((h, i) => (
@@ -4948,6 +5004,35 @@ function GanttKanbanView({
               ))}
             </div>
           </div>
+
+          {todayOffset >= 0 && todayOffset <= totalDays && (
+            <>
+              <div
+                className="absolute pointer-events-none"
+                style={{
+                  left: `${260 + (todayOffset * PX_PER_DAY)}px`,
+                  top: '41px',
+                  bottom: '28px',
+                  width: '2px',
+                  backgroundColor: '#EF4444',
+                  zIndex: 8,
+                }}
+              />
+              <div
+                className="absolute pointer-events-none px-1.5 py-0.5 rounded text-[10px] font-semibold"
+                style={{
+                  left: `${264 + (todayOffset * PX_PER_DAY)}px`,
+                  bottom: '4px',
+                  color: '#FFFFFF',
+                  backgroundColor: '#EF4444',
+                  zIndex: 9,
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {todayLabel}
+              </div>
+            </>
+          )}
 
           {/* Project Rows */}
           {orderedProjects.map(project => {
@@ -4997,7 +5082,7 @@ function GanttKanbanView({
                         endDate: project.endDate || '',
                       })}
                       className="flex-shrink-0 p-0.5 rounded hover:bg-gray-100"
-                      title="编辑日期"
+                      title={isHighPriorityMode ? '编辑高优先级日期' : '编辑日期'}
                     >
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                     </button>
@@ -5029,19 +5114,6 @@ function GanttKanbanView({
                       }}
                     />
                   ))}
-
-                  {/* Today Line */}
-                  {todayOffset >= 0 && todayOffset <= totalDays && (
-                    <div
-                      className="absolute top-0 bottom-0"
-                      style={{
-                        left: `${(todayOffset / totalWidthUnits) * 100}%`,
-                        width: '2px',
-                        backgroundColor: '#EF4444',
-                        zIndex: 5,
-                      }}
-                    />
-                  )}
 
                   {/* Project Bar */}
                   {hasVisibleBar && (
@@ -5092,7 +5164,7 @@ function GanttKanbanView({
 
           {orderedProjects.length === 0 && (
             <div className="text-center py-12 text-sm" style={{ color: '#9CA3AF' }}>
-              暂无进行中的项目
+              {isHighPriorityMode ? '暂无包含高优先级用例的进行中项目' : '暂无进行中的项目'}
             </div>
           )}
         </div>
@@ -5104,6 +5176,11 @@ function GanttKanbanView({
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>{selectedProject.name}</h3>
+                    {isHighPriorityMode && (
+                      <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
+                        High
+                      </span>
+                    )}
                     <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#EEF6FF', color: '#0369A1' }}>
                       {selectedProject.testers.length} 位执行者
                     </span>
@@ -5158,7 +5235,7 @@ function GanttKanbanView({
                     className="text-xs px-3 py-1.5 rounded border hover:bg-gray-50"
                     style={{ borderColor: '#D1D5DB', color: '#374151' }}
                   >
-                    {showOnlyIncompleteModules ? '查看全部目录' : '一键查看未完成目录'}
+                    {showOnlyIncompleteModules ? '查看全部目录' : isHighPriorityMode ? '一键查看高优先级未完成目录' : '一键查看未完成目录'}
                   </button>
                 </div>
               </div>
@@ -5277,7 +5354,11 @@ function GanttKanbanView({
                             );
                           }) : (
                             <div className="text-xs" style={{ color: '#9CA3AF' }}>
-                              {showOnlyIncompleteModules ? '该执行者当前没有未完成目录' : '该执行者暂无用例'}
+                              {showOnlyIncompleteModules
+                                ? '该执行者当前没有未完成目录'
+                                : isHighPriorityMode
+                                  ? '该执行者暂无高优先级用例'
+                                  : '该执行者暂无用例'}
                             </div>
                           )}
                         </div>
@@ -5287,7 +5368,7 @@ function GanttKanbanView({
                 ))}
                 {selectedProject.testers.length === 0 && (
                   <div className="rounded-md border px-4 py-6 text-sm text-center" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
-                    暂无执行者
+                    {isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者'}
                   </div>
                 )}
               </div>
@@ -5312,7 +5393,14 @@ function GanttKanbanView({
             }}
           >
             <div className="flex items-center justify-between mb-2">
-              <span className="text-sm font-bold" style={{ color: '#1F2937' }}>{project.name}</span>
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-sm font-bold truncate" style={{ color: '#1F2937' }}>{project.name}</span>
+                {isHighPriorityMode && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
+                    HIGH
+                  </span>
+                )}
+              </div>
               <span className="text-xs px-1.5 py-0.5 rounded" style={{
                 backgroundColor: '#F1F5F9',
                 color: getCompletionColor(project.completionRate),
@@ -5362,8 +5450,12 @@ function GanttKanbanView({
         <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.4)' }}>
           <div className="bg-white rounded-xl shadow-2xl w-[400px] overflow-hidden">
             <div className="px-6 py-4 border-b" style={{ borderColor: '#EEEEEE' }}>
-              <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>编辑项目日期</h3>
-              <p className="text-sm mt-1" style={{ color: '#6B7280' }}>{editingDates.name}</p>
+              <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>
+                {isHighPriorityMode ? '编辑高优先级项目日期' : '编辑项目日期'}
+              </h3>
+              <p className="text-sm mt-1" style={{ color: '#6B7280' }}>
+                {editingDates.name}{isHighPriorityMode ? ' · 当前仅影响 High 视图' : ''}
+              </p>
             </div>
             <div className="px-6 py-4 space-y-4">
               <div>

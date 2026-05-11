@@ -51,7 +51,7 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '无修改权限' }, { status: 403 });
     }
 
-    const { id, name, start_date, end_date } = await request.json();
+    const { id, name, start_date, end_date, priorityMode } = await request.json();
     if (!id) {
       return NextResponse.json({ error: '参数错误' }, { status: 400 });
     }
@@ -66,9 +66,13 @@ export async function PUT(request: NextRequest) {
     }
 
     if (start_date !== undefined || end_date !== undefined) {
-      const sd = start_date !== undefined ? start_date : (project as Record<string, unknown>).start_date as string | null;
-      const ed = end_date !== undefined ? end_date : (project as Record<string, unknown>).end_date as string | null;
-      db.prepare('UPDATE projects SET start_date = ?, end_date = ? WHERE id = ?').run(sd, ed, id);
+      const isHighPriorityMode = priorityMode === 'high';
+      const startField = isHighPriorityMode ? 'high_priority_start_date' : 'start_date';
+      const endField = isHighPriorityMode ? 'high_priority_end_date' : 'end_date';
+      const currentProject = project as Record<string, unknown>;
+      const sd = start_date !== undefined ? start_date : currentProject[startField] as string | null;
+      const ed = end_date !== undefined ? end_date : currentProject[endField] as string | null;
+      db.prepare(`UPDATE projects SET ${startField} = ?, ${endField} = ? WHERE id = ?`).run(sd, ed, id);
     }
 
     return NextResponse.json({ success: true });

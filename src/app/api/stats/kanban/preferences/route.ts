@@ -9,6 +9,7 @@ const DEFAULT_PREFERENCES = {
   sortByStartDate: false,
   showOnlyIncompleteModules: false,
   selectedProjectId: null as number | null,
+  priorityMode: 'all' as 'all' | 'high',
 };
 
 function getPreferenceKey(userId: number) {
@@ -33,6 +34,7 @@ export async function GET() {
       sortByStartDate?: boolean;
       showOnlyIncompleteModules?: boolean;
       selectedProjectId?: number | null;
+      priorityMode?: 'all' | 'high';
     };
 
     return NextResponse.json({
@@ -53,6 +55,9 @@ export async function GET() {
         selectedProjectId: typeof parsed.selectedProjectId === 'number'
           ? parsed.selectedProjectId
           : DEFAULT_PREFERENCES.selectedProjectId,
+        priorityMode: parsed.priorityMode === 'high'
+          ? 'high'
+          : DEFAULT_PREFERENCES.priorityMode,
       },
     });
   } catch (error) {
@@ -73,6 +78,7 @@ export async function PUT(request: NextRequest) {
       sortByStartDate?: boolean;
       showOnlyIncompleteModules?: boolean;
       selectedProjectId?: number | null;
+      priorityMode?: 'all' | 'high';
     };
 
     const preferences = {
@@ -92,6 +98,9 @@ export async function PUT(request: NextRequest) {
       selectedProjectId: typeof body.selectedProjectId === 'number'
         ? body.selectedProjectId
         : DEFAULT_PREFERENCES.selectedProjectId,
+      priorityMode: body.priorityMode === 'high'
+        ? 'high'
+        : DEFAULT_PREFERENCES.priorityMode,
     };
 
     const db = getDb();
