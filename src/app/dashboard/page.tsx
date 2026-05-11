@@ -4589,6 +4589,8 @@ function GanttKanbanView({
   const [sortByStartDate, setSortByStartDate] = useState(false);
   const [showOnlyIncompleteModules, setShowOnlyIncompleteModules] = useState(false);
   const [expandedModuleKey, setExpandedModuleKey] = useState<string | null>(null);
+  const [expandedTesterJiraSectionKey, setExpandedTesterJiraSectionKey] = useState<string | null>(null);
+  const [expandedTesterJiraKey, setExpandedTesterJiraKey] = useState<string | null>(null);
   const ganttContainerRef = useRef<HTMLDivElement>(null);
 
   const today = new Date();
@@ -4786,6 +4788,37 @@ function GanttKanbanView({
         const right = `${b.caseNo || ''} ${b.caseName || ''}`;
         return left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' });
       });
+  };
+
+  const getTesterJiraGroups = (tester: KanbanTesterStat) => {
+    if (!selectedProject) return [];
+
+    const jiraMap = new Map<string, {
+      link: string;
+      cases: KanbanCaseStat[];
+    }>();
+
+    for (const caseItem of selectedProject.cases) {
+      if (caseItem.testerId !== tester.userId) continue;
+      const jiraLink = caseItem.jiraLink?.trim();
+      if (!jiraLink) continue;
+
+      if (!jiraMap.has(jiraLink)) {
+        jiraMap.set(jiraLink, { link: jiraLink, cases: [] });
+      }
+      jiraMap.get(jiraLink)!.cases.push(caseItem);
+    }
+
+    return Array.from(jiraMap.values())
+      .map(group => ({
+        ...group,
+        cases: group.cases.sort((a, b) => {
+          const left = `${a.moduleName} ${a.caseNo || ''} ${a.caseName || ''}`;
+          const right = `${b.moduleName} ${b.caseNo || ''} ${b.caseName || ''}`;
+          return left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' });
+        }),
+      }))
+      .sort((a, b) => a.link.localeCompare(b.link, 'zh-CN', { numeric: true, sensitivity: 'base' }));
   };
 
   const refreshBoardView = () => {
@@ -5240,9 +5273,14 @@ function GanttKanbanView({
                 </div>
               </div>
               <div className="space-y-4">
-                {selectedProject.testers.map(tester => (
-                  <div key={tester.userId} className="rounded-md border" style={{ borderColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
-                    <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr]">
+                {selectedProject.testers.map(tester => {
+                  const testerJiraGroups = getTesterJiraGroups(tester);
+                  const testerJiraSectionKey = `tester-jira-${tester.userId}`;
+                  const isTesterJiraSectionExpanded = expandedTesterJiraSectionKey === testerJiraSectionKey;
+
+                  return (
+                    <div key={tester.userId} className="rounded-md border" style={{ borderColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
+                      <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr]">
                       <div className="p-4 border-b lg:border-b-0 lg:border-r" style={{ borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' }}>
                         <div className="flex items-start justify-between gap-3 lg:block">
                           <div>
@@ -5272,6 +5310,103 @@ function GanttKanbanView({
                         </div>
                       </div>
                       <div className="p-4">
+                        <div className="mb-4 rounded-md border overflow-hidden" style={{ borderColor: '#E5E7EB', backgroundColor: '#FCFCFD' }}>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedTesterJiraSectionKey(isTesterJiraSectionExpanded ? null : testerJiraSectionKey)}
+                            className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px]" style={{ color: '#64748B' }}>{isTesterJiraSectionExpanded ? '▼' : '▶'}</span>
+                                <span className="text-xs font-semibold" style={{ color: '#111827' }}>JIRA 汇总</span>
+                                <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: '#F3F4F6', color: '#4B5563' }}>
+                                  {testerJiraGroups.length}
+                                </span>
+                              </div>
+                              <div className="text-[11px] mt-1" style={{ color: '#6B7280' }}>
+                                {isHighPriorityMode ? '当前仅统计 High 用例关联的 JIRA' : '当前统计全部已关联 JIRA 的用例'}
+                              </div>
+                            </div>
+                          </button>
+                          {isTesterJiraSectionExpanded && (
+                            <div className="border-t px-3 py-3" style={{ borderColor: '#E5E7EB', backgroundColor: '#F9FAFB' }}>
+                              {testerJiraGroups.length > 0 ? (
+                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2.5">
+                                  {testerJiraGroups.map(jiraGroup => {
+                                    const jiraRowKey = `${tester.userId}-${jiraGroup.link}`;
+                                    const isJiraExpanded = expandedTesterJiraKey === jiraRowKey;
+
+                                    return (
+                                      <div key={jiraRowKey} className="rounded-md border" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' }}>
+                                        <div className="flex items-start gap-2 px-3 py-2.5">
+                                          <button
+                                            type="button"
+                                            onClick={() => setExpandedTesterJiraKey(isJiraExpanded ? null : jiraRowKey)}
+                                            className="min-w-0 flex-1 text-left"
+                                          >
+                                            <div className="flex items-center gap-2">
+                                              <span className="text-[10px]" style={{ color: '#64748B' }}>{isJiraExpanded ? '▼' : '▶'}</span>
+                                              <span className="text-xs font-medium truncate" style={{ color: '#9A3412' }} title={jiraGroup.link}>
+                                                {jiraGroup.link}
+                                              </span>
+                                            </div>
+                                            <div className="text-[11px] mt-1" style={{ color: '#6B7280' }}>
+                                              关联 {jiraGroup.cases.length} 条用例
+                                            </div>
+                                          </button>
+                                          <a
+                                            href={jiraGroup.link}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="text-[11px] px-2 py-0.5 rounded border flex-shrink-0 hover:bg-amber-50"
+                                            style={{ borderColor: '#FCD34D', color: '#B45309' }}
+                                            onClick={(e) => e.stopPropagation()}
+                                          >
+                                            打开
+                                          </a>
+                                        </div>
+                                        {isJiraExpanded && (
+                                          <div className="border-t px-3 py-2 space-y-1.5" style={{ borderColor: '#F3F4F6', backgroundColor: '#FFFBEB' }}>
+                                            {jiraGroup.cases.map(caseItem => {
+                                              const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
+                                              const statusMeta = getCaseStatusMeta(caseItem.testResult);
+                                              return (
+                                                <div key={`${jiraRowKey}-${caseItem.id}`} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
+                                                  <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>
+                                                    {statusMeta.label}
+                                                  </span>
+                                                  <span className="text-[11px] flex-shrink-0 truncate max-w-[120px]" style={{ color: '#6B7280' }} title={caseItem.moduleName}>
+                                                    {caseItem.moduleName}
+                                                  </span>
+                                                  <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>
+                                                    {caseTitle}
+                                                  </span>
+                                                  <button
+                                                    type="button"
+                                                    onClick={() => onNavigateCase(caseItem.id)}
+                                                    className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50"
+                                                    style={{ borderColor: '#CBD5E1', color: '#2563EB' }}
+                                                  >
+                                                    详情
+                                                  </button>
+                                                </div>
+                                              );
+                                            })}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <div className="text-xs px-1" style={{ color: '#94A3B8' }}>
+                                  {isHighPriorityMode ? '当前高优先级范围内暂无已关联 JIRA 的用例' : '当前暂无已关联 JIRA 的用例'}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
                           {getVisibleModules(tester).length > 0 ? getVisibleModules(tester).map(moduleStat => {
                             const moduleRowKey = `${tester.userId}-${moduleStat.key}`;
@@ -5364,8 +5499,9 @@ function GanttKanbanView({
                         </div>
                       </div>
                     </div>
-                  </div>
-                ))}
+                    </div>
+                  );
+                })}
                 {selectedProject.testers.length === 0 && (
                   <div className="rounded-md border px-4 py-6 text-sm text-center" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
                     {isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者'}
