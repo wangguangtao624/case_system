@@ -57,19 +57,30 @@ export async function GET(request: NextRequest) {
     const db = getDb();
     const { searchParams } = new URL(request.url);
     const priorityMode = searchParams.get('priorityMode') === 'high' ? 'high' : 'all';
+    const projectId = Number(searchParams.get('projectId') || 0);
+    const includeArchived = searchParams.get('includeArchived') === '1';
 
-    const activeProjects = db.prepare(`
-      SELECT p.id, p.name, p.start_date, p.end_date, p.high_priority_start_date, p.high_priority_end_date
+    let projectQuery = `
+      SELECT p.id, p.name, p.start_date, p.end_date, p.high_priority_start_date, p.high_priority_end_date, p.is_archived
       FROM projects p
-      WHERE p.is_archived = 0
-      ORDER BY p.sort_order, p.id
-    `).all() as {
+    `;
+    const projectParams: number[] = [];
+    if (projectId > 0) {
+      projectQuery += ' WHERE p.id = ?';
+      projectParams.push(projectId);
+    } else {
+      projectQuery += includeArchived ? ' WHERE 1 = 1' : ' WHERE p.is_archived = 0';
+    }
+    projectQuery += ' ORDER BY p.is_archived ASC, p.sort_order, p.id';
+
+    const activeProjects = db.prepare(projectQuery).all(...projectParams) as {
       id: number;
       name: string;
       start_date: string | null;
       end_date: string | null;
       high_priority_start_date: string | null;
       high_priority_end_date: string | null;
+      is_archived: number;
     }[];
 
     const assignments = db.prepare(`

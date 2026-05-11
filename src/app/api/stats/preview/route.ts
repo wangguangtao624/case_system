@@ -2,6 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getCurrentUser } from '@/lib/auth';
 
+type AssignmentRow = {
+  level: string;
+  target_id: number;
+  user_id: number;
+  tester_name: string;
+};
+
 export async function GET(request: NextRequest) {
   try {
     const user = await getCurrentUser();
@@ -17,6 +24,18 @@ export async function GET(request: NextRequest) {
 
     const db = getDb();
     const dbId = Number(id);
+    const assignments = db.prepare(`
+      SELECT a.level, a.target_id, a.user_id, u.username as tester_name
+      FROM assignments a
+      JOIN users u ON a.user_id = u.id
+    `).all() as AssignmentRow[];
+    const assignmentMap = new Map<string, { userId: number; testerName: string }>();
+    for (const assignment of assignments) {
+      assignmentMap.set(`${assignment.level}-${assignment.target_id}`, {
+        userId: assignment.user_id,
+        testerName: assignment.tester_name,
+      });
+    }
 
     // Parse priority filter
     const selectedPriorities = prioritiesParam
@@ -34,6 +53,7 @@ export async function GET(request: NextRequest) {
       const moduleStats: Array<{
         id: number;
         name: string;
+        testerNames: string;
         total: number;
         completed: number;
         incomplete: number;
@@ -54,11 +74,17 @@ export async function GET(request: NextRequest) {
       let projectBlocked = 0;
 
       for (const mod of modules) {
-        let cases = db.prepare('SELECT test_result, priority FROM cases WHERE module_id = ?').all(mod.id) as { test_result: string | null; priority: string }[];
+        const projectTester = assignmentMap.get(`project-${dbId}`);
+        const moduleTester = assignmentMap.get(`module-${mod.id}`);
+        let cases = db.prepare('SELECT id, test_result, priority FROM cases WHERE module_id = ?').all(mod.id) as { id: number; test_result: string | null; priority: string }[];
         // Apply priority filter
         if (selectedPriorities) {
           cases = cases.filter(c => selectedPriorities.includes(c.priority));
         }
+        const testerNames = [...new Set(cases.map(c => {
+          const caseTester = assignmentMap.get(`case-${c.id}`);
+          return (caseTester || moduleTester || projectTester)?.testerName || '未分配';
+        }))];
         const total = cases.length;
         const passed = cases.filter(c => c.test_result === 'Pass').length;
         const failed = cases.filter(c => c.test_result === 'Fail').length;
@@ -73,6 +99,7 @@ export async function GET(request: NextRequest) {
         moduleStats.push({
           id: mod.id,
           name: mod.name,
+          testerNames: testerNames.join('、'),
           total,
           completed,
           incomplete,
@@ -134,6 +161,13 @@ export async function GET(request: NextRequest) {
         test_result: string | null;
         priority: string;
       }[];
+      const projectRow = db.prepare(`
+        SELECT p.id as project_id FROM modules m
+        JOIN projects p ON m.project_id = p.id
+        WHERE m.id = ?
+      `).get(dbId) as { project_id: number } | undefined;
+      const projectTester = projectRow ? assignmentMap.get(`project-${projectRow.project_id}`) : undefined;
+      const moduleTester = assignmentMap.get(`module-${dbId}`);
 
       // Apply priority filter
       if (selectedPriorities) {
@@ -156,13 +190,16 @@ export async function GET(request: NextRequest) {
         case_name: c.case_name,
         test_result: c.test_result,
         priority: c.priority,
+        testerName: (assignmentMap.get(`case-${c.id}`) || moduleTester || projectTester)?.testerName || '未分配',
         status: !c.test_result ? 'incomplete' : c.test_result === 'Pass' ? 'passed' : c.test_result === 'Fail' ? 'failed' : c.test_result === 'Block' ? 'blocked' : 'incomplete',
       }));
+      const testerNames = [...new Set(caseList.map(c => c.testerName))];
 
       return NextResponse.json({
         level: 'module',
         id: dbId,
         name: moduleRow.name,
+        testerNames,
         summary: {
           total,
           completed,

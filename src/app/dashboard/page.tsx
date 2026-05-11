@@ -208,6 +208,9 @@ export default function DashboardPage() {
   const [kanbanData, setKanbanData] = useState<KanbanGanttData | null>(null);
   const [kanbanLoading, setKanbanLoading] = useState(false);
   const [kanbanPriorityMode, setKanbanPriorityMode] = useState<KanbanPriorityMode>('all');
+  const [selectedProjectOverview, setSelectedProjectOverview] = useState<KanbanProjectStat | null>(null);
+  const [selectedProjectOverviewLoading, setSelectedProjectOverviewLoading] = useState(false);
+  const [selectedProjectOverviewMode, setSelectedProjectOverviewMode] = useState<KanbanPriorityMode>('all');
   // Bug Report
   const [showBugReport, setShowBugReport] = useState(false);
   const [showBugPanel, setShowBugPanel] = useState(false);
@@ -255,6 +258,30 @@ export default function DashboardPage() {
       console.error('Load kanban error:', error);
     } finally {
       setKanbanLoading(false);
+    }
+  }, []);
+
+  const fetchProjectOverview = useCallback(async (projectId: number, priorityMode: KanbanPriorityMode = 'all') => {
+    setShowKanban(false);
+    setKanbanData(null);
+    setSelectedCase(null);
+    setSelectedProjectOverviewLoading(true);
+    setSelectedProjectOverviewMode(priorityMode);
+    try {
+      const params = new URLSearchParams({
+        priorityMode,
+        projectId: String(projectId),
+        includeArchived: '1',
+      });
+      const response = await fetch(`/api/stats/kanban?${params.toString()}`);
+      const result = await response.json();
+      const project = result?.projects?.[0] as KanbanProjectStat | undefined;
+      setSelectedProjectOverview(project || null);
+    } catch (error) {
+      console.error('Load project overview error:', error);
+      setSelectedProjectOverview(null);
+    } finally {
+      setSelectedProjectOverviewLoading(false);
     }
   }, []);
 
@@ -330,6 +357,7 @@ export default function DashboardPage() {
   const handleSelectCase = useCallback(async (node: TreeNode) => {
     setShowKanban(false);
     setKanbanData(null);
+    setSelectedProjectOverview(null);
     setSelectedNodeId(node.id);
     try {
       const res = await fetch(`/api/cases/${node.dbId}?_t=${Date.now()}`);
@@ -634,6 +662,10 @@ export default function DashboardPage() {
               setExpandedNodes={setExpandedNodes}
               selectedNodeId={selectedNodeId}
               onSelectCase={handleSelectCase}
+              onSelectProject={(projectId: number) => {
+                setSelectedNodeId(`project-${projectId}`);
+                fetchProjectOverview(projectId);
+              }}
               onTreeChange={() => loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter)}
               onToggleSidebar={() => setSidebarCollapsed(true)}
               onPreview={(level, id, name) => setStatsPreview({ level, id, name })}
@@ -646,6 +678,7 @@ export default function DashboardPage() {
               onArchive={(projectId, projectName) => setArchiveDialog({ projectId, projectName })}
               onOpenKanban={() => {
                 setSelectedCase(null);
+                setSelectedProjectOverview(null);
                 setSelectedNodeId(null);
                 setShowKanban(true);
                 fetchKanbanData(kanbanPriorityMode);
@@ -769,6 +802,21 @@ export default function DashboardPage() {
                 setShowPreview({ fileId, content, filename, truncated, isImage });
               }}
             />
+          ) : selectedProjectOverview ? (
+            <ProjectExecutionSummary
+              selectedProject={selectedProjectOverview}
+              isHighPriorityMode={selectedProjectOverviewMode === 'high'}
+              onNavigateCase={handleOpenCaseById}
+              onNavigateTreeNode={handleNavigateTreeNode}
+              onPriorityModeChange={(priorityMode) => fetchProjectOverview(selectedProjectOverview.id, priorityMode)}
+            />
+          ) : selectedProjectOverviewLoading ? (
+            <div className="flex items-center justify-center h-full" style={{ color: '#999' }}>
+              <div className="text-center">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 mx-auto mb-4" style={{ borderColor: '#0073E6' }}></div>
+                <p className="text-sm">加载项目执行详情...</p>
+              </div>
+            </div>
           ) : (
             <div className="flex items-center justify-center h-full" style={{ color: '#999' }}>
               <div className="text-center">
@@ -994,6 +1042,7 @@ function SidebarTree({
   setExpandedNodes,
   selectedNodeId,
   onSelectCase,
+  onSelectProject,
   onTreeChange,
   onToggleSidebar,
   onPreview,
@@ -1014,6 +1063,7 @@ function SidebarTree({
   setExpandedNodes: (nodes: Set<string>) => void;
   selectedNodeId: string | null;
   onSelectCase: (node: TreeNode) => void;
+  onSelectProject: (projectId: number) => void;
   onTreeChange: () => void;
   onToggleSidebar: () => void;
   onPreview: (level: 'project' | 'module', id: number, name: string) => void;
@@ -1295,6 +1345,7 @@ function SidebarTree({
           }}
           onClick={() => {
             if (hasChildren || node.type !== 'case') toggleExpand(node.id);
+            if (node.type === 'project') onSelectProject(node.dbId);
             if (node.type === 'case') onSelectCase(node);
           }}
           onContextMenu={(e) => handleContextMenu(e, node)}
@@ -3871,6 +3922,7 @@ interface StatsSummary {
 interface ModuleStat {
   id: number;
   name: string;
+  testerNames?: string;
   total: number;
   completed: number;
   incomplete: number;
@@ -3888,6 +3940,7 @@ interface CaseStat {
   case_name: string;
   test_result: string | null;
   priority: string;
+  testerName?: string;
   status: 'passed' | 'failed' | 'blocked' | 'incomplete';
 }
 
@@ -3911,6 +3964,7 @@ function StatsPreviewModal({
     modules?: ModuleStat[];
     cases?: CaseStat[];
     name?: string;
+    testerNames?: string[];
     jiraLinks?: Array<{ link: string; cases: Array<{ id: number; case_name: string; test_result: string | null; module_name: string }> }>;
   } | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4004,6 +4058,7 @@ function StatsPreviewModal({
   const moduleBarData = data.modules
     ? data.modules.map(m => ({
         name: m.name,
+        testerNames: m.testerNames || '未分配',
         通过: m.total > 0 ? Math.round(m.passed / m.total * 1000) / 10 : 0,
         失败: m.total > 0 ? Math.round(m.failed / m.total * 1000) / 10 : 0,
         阻塞: m.total > 0 ? Math.round(m.blocked / m.total * 1000) / 10 : 0,
@@ -4212,6 +4267,9 @@ function StatsPreviewModal({
                         return (
                           <div className="bg-white border rounded-lg shadow-lg px-3 py-2 text-xs" style={{ borderColor: '#E5E7EB' }}>
                             <p className="font-semibold mb-1" style={{ color: '#1F2937' }}>{d.name}</p>
+                            {'testerNames' in d && typeof d.testerNames === 'string' && d.testerNames && (
+                              <p style={{ color: '#6366F1' }}>执行者: {d.testerNames}</p>
+                            )}
                             <p style={{ color: '#22C55E' }}>通过 ({d.passCount}): {d.通过}%</p>
                             <p style={{ color: '#EF4444' }}>失败 ({d.failCount}): {d.失败}%</p>
                             <p style={{ color: '#F97316' }}>阻塞 ({d.blockCount}): {d.阻塞}%</p>
@@ -4299,6 +4357,7 @@ function StatsPreviewModal({
                     <thead>
                       <tr style={{ backgroundColor: '#F9FAFB' }}>
                         <th className="text-left px-4 py-2 font-medium" style={{ color: '#6B7280' }}>特性名称</th>
+                        <th className="text-left px-3 py-2 font-medium" style={{ color: '#6B7280' }}>执行者</th>
                         <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>总数</th>
                         <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>完成率</th>
                         <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>通过率</th>
@@ -4311,6 +4370,7 @@ function StatsPreviewModal({
                       {sortedModules.map(m => (
                         <tr key={m.id} className="border-t hover:bg-gray-50" style={{ borderColor: '#F3F4F6' }}>
                           <td className="px-4 py-2 font-medium" style={{ color: '#1F2937' }}>{m.name}</td>
+                          <td className="px-3 py-2" style={{ color: '#6366F1' }}>{m.testerNames || '未分配'}</td>
                           <td className="text-center px-3 py-2" style={{ color: '#374151' }}>{m.total}</td>
                           <td className="text-center px-3 py-2">
                             <span className="inline-flex items-center gap-1">
@@ -4350,6 +4410,11 @@ function StatsPreviewModal({
           {/* ===== Module Level: Case List + Chart ===== */}
           {level === 'module' && data.cases && (
             <>
+              {data.testerNames && data.testerNames.length > 0 && (
+                <div className="mb-4 text-xs" style={{ color: '#6366F1' }}>
+                  执行者: {data.testerNames.join('、')}
+                </div>
+              )}
               {/* Case Status Bar Chart */}
               {data.cases.length > 0 && (
                 <div className="rounded-lg border p-4 mb-6" style={{ borderColor: '#E5E7EB', backgroundColor: '#FAFBFC' }}>
@@ -4405,6 +4470,7 @@ function StatsPreviewModal({
                       <thead>
                         <tr style={{ backgroundColor: '#F9FAFB' }}>
                           <th className="text-left px-4 py-2 font-medium" style={{ color: '#6B7280' }}>用例名称</th>
+                          <th className="text-left px-3 py-2 font-medium" style={{ color: '#6B7280' }}>执行者</th>
                           <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>优先级</th>
                           <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>测试结果</th>
                           <th className="text-center px-3 py-2 font-medium" style={{ color: '#6B7280' }}>操作</th>
@@ -4414,6 +4480,7 @@ function StatsPreviewModal({
                         {filteredCases.map(c => (
                           <tr key={c.id} className="border-t hover:bg-gray-50" style={{ borderColor: '#F3F4F6' }}>
                             <td className="px-4 py-2 font-medium truncate max-w-[300px]" style={{ color: '#1F2937' }}>{c.case_name}</td>
+                            <td className="px-3 py-2" style={{ color: '#6366F1' }}>{c.testerName || '未分配'}</td>
                             <td className="text-center px-3 py-2">
                               <span className="inline-block px-1.5 py-0.5 rounded text-xs"
                                 style={{
@@ -4552,6 +4619,358 @@ function StatCard({ label, value, subtext, color }: { label: string; value: numb
   );
 }
 
+function ProjectExecutionSummary({
+  selectedProject,
+  isHighPriorityMode,
+  onNavigateCase,
+  onNavigateTreeNode,
+  onPriorityModeChange,
+}: {
+  selectedProject: KanbanProjectStat;
+  isHighPriorityMode: boolean;
+  onNavigateCase: (caseId: number) => void;
+  onNavigateTreeNode: (type: 'project' | 'module', dbId: number) => void;
+  onPriorityModeChange?: (priorityMode: KanbanPriorityMode) => void;
+}) {
+  const [showOnlyIncompleteModules, setShowOnlyIncompleteModules] = useState(false);
+  const [expandedModuleKey, setExpandedModuleKey] = useState<string | null>(null);
+  const [expandedTesterJiraSectionKey, setExpandedTesterJiraSectionKey] = useState<string | null>(null);
+  const [expandedTesterJiraKey, setExpandedTesterJiraKey] = useState<string | null>(null);
+
+  const getCompletionColor = (rate: number) => {
+    if (rate >= 100) return '#16A34A';
+    if (rate >= 70) return '#0EA5E9';
+    if (rate > 0) return '#F59E0B';
+    return '#CBD5E1';
+  };
+
+  const getCaseStatusMeta = (testResult: string | null) => {
+    if (testResult === 'Pass') return { label: '通过', color: '#16A34A', backgroundColor: '#DCFCE7' };
+    if (testResult === 'Fail') return { label: '失败', color: '#DC2626', backgroundColor: '#FEE2E2' };
+    if (testResult === 'Block') return { label: '阻塞', color: '#D97706', backgroundColor: '#FEF3C7' };
+    return { label: '未完成', color: '#64748B', backgroundColor: '#F1F5F9' };
+  };
+
+  const getModuleTooltipText = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat) => (
+    `${tester.username} / ${moduleStat.moduleName}
+完成 ${moduleStat.completed}/${moduleStat.total}
+通过 ${moduleStat.passed}  失败 ${moduleStat.failed}  阻塞 ${moduleStat.blocked}  未完成 ${moduleStat.incomplete}`
+  );
+
+  const getVisibleModules = (tester: KanbanTesterStat) => {
+    return showOnlyIncompleteModules
+      ? tester.modules.filter(moduleStat => moduleStat.incomplete > 0)
+      : tester.modules;
+  };
+
+  const getModuleCases = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat): KanbanCaseStat[] => {
+    return selectedProject.cases
+      .filter(caseItem => caseItem.testerId === tester.userId && caseItem.moduleId === moduleStat.moduleId)
+      .sort((a, b) => {
+        const left = `${a.caseNo || ''} ${a.caseName || ''}`;
+        const right = `${b.caseNo || ''} ${b.caseName || ''}`;
+        return left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' });
+      });
+  };
+
+  const getTesterJiraGroups = (tester: KanbanTesterStat) => {
+    const jiraMap = new Map<string, { link: string; cases: KanbanCaseStat[] }>();
+    for (const caseItem of selectedProject.cases) {
+      if (caseItem.testerId !== tester.userId) continue;
+      const jiraLink = caseItem.jiraLink?.trim();
+      if (!jiraLink) continue;
+      if (!jiraMap.has(jiraLink)) jiraMap.set(jiraLink, { link: jiraLink, cases: [] });
+      jiraMap.get(jiraLink)!.cases.push(caseItem);
+    }
+    return Array.from(jiraMap.values());
+  };
+
+  return (
+    <div className="p-5">
+      <div className="rounded-md border overflow-hidden" style={{ borderColor: '#DDE3EA', backgroundColor: '#FFFFFF' }}>
+        <div className="px-5 py-4 border-b" style={{ borderColor: '#E5E7EB', backgroundColor: '#F8FAFC' }}>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="flex-1 min-w-[320px]">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>{selectedProject.name}</h3>
+                {isHighPriorityMode && (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
+                    High
+                  </span>
+                )}
+                <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#EEF6FF', color: '#0369A1' }}>
+                  {selectedProject.testers.length} 位执行者
+                </span>
+                <button
+                  onClick={() => onNavigateTreeNode('project', selectedProject.id)}
+                  className="text-xs px-2 py-0.5 rounded border hover:bg-white"
+                  style={{ borderColor: '#CBD5E1', color: '#475569' }}
+                >
+                    定位项目
+                  </button>
+                </div>
+                <div className="text-xs mt-1" style={{ color: '#6B7280' }}>
+                  {selectedProject.startDate && selectedProject.endDate
+                    ? `${selectedProject.startDate} ~ ${selectedProject.endDate}`
+                    : '项目日期尚未设置'}
+                </div>
+                <div className="flex flex-wrap gap-2 mt-3">
+                  {selectedProject.testers.map(tester => (
+                    <span
+                      key={tester.userId}
+                      className="text-xs px-2 py-1 rounded-full"
+                      style={{ backgroundColor: '#F3F4F6', color: '#374151' }}
+                    >
+                      {tester.username}
+                    </span>
+                  ))}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {onPriorityModeChange && (
+                  <div className="flex items-center rounded border overflow-hidden" style={{ borderColor: '#CBD5E1' }}>
+                    <button
+                      onClick={() => onPriorityModeChange('all')}
+                      className="text-xs px-2.5 py-1 transition-colors"
+                      style={{
+                        backgroundColor: !isHighPriorityMode ? '#0073E6' : '#FFFFFF',
+                        color: !isHighPriorityMode ? '#FFFFFF' : '#475569',
+                      }}
+                    >
+                      全部用例
+                    </button>
+                    <button
+                      onClick={() => onPriorityModeChange('high')}
+                      className="text-xs px-2.5 py-1 transition-colors"
+                      style={{
+                        backgroundColor: isHighPriorityMode ? '#DC2626' : '#FFFFFF',
+                        color: isHighPriorityMode ? '#FFFFFF' : '#475569',
+                      }}
+                    >
+                      高优先级详情
+                    </button>
+                  </div>
+                )}
+                <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#ECFDF5', color: '#047857' }}>
+                  完成 {selectedProject.completed}/{selectedProject.total}
+                </span>
+                <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
+                  失败 {selectedProject.failed}
+                </span>
+                <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#FFF7ED', color: '#EA580C' }}>
+                  阻塞 {selectedProject.blocked}
+                </span>
+                <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#F3F4F6', color: '#6B7280' }}>
+                  未完成 {selectedProject.incomplete}
+                </span>
+              </div>
+            </div>
+            <div className="rounded-xl border px-4 py-4" style={{ borderColor: '#D6E4F5', backgroundColor: '#FFFFFF' }}>
+              <div className="flex items-center justify-between gap-4 mb-3">
+                <div>
+                  <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>总用例执行进度</div>
+                  <div className="text-xs mt-1" style={{ color: '#64748B' }}>
+                    已完成 {selectedProject.completed} / 总用例 {selectedProject.total}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-3xl font-bold leading-none" style={{ color: getCompletionColor(selectedProject.completionRate) }}>
+                    {selectedProject.completionRate}%
+                  </div>
+                  <div className="text-[11px] mt-1" style={{ color: '#94A3B8' }}>整体完成率</div>
+                </div>
+              </div>
+              <div className="h-5 rounded-full overflow-hidden shadow-inner" style={{ backgroundColor: '#E2E8F0' }}>
+                <div
+                  className="h-full rounded-full"
+                  style={{
+                    width: `${selectedProject.completionRate}%`,
+                    background: `linear-gradient(90deg, ${getCompletionColor(selectedProject.completionRate)} 0%, ${getCompletionColor(selectedProject.completionRate)}CC 100%)`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-5 py-4">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>执行者与二级目录进度</h4>
+            <button
+              onClick={() => setShowOnlyIncompleteModules(value => !value)}
+              className="text-xs px-3 py-1.5 rounded border hover:bg-gray-50"
+              style={{ borderColor: '#D1D5DB', color: '#374151' }}
+            >
+              {showOnlyIncompleteModules ? '查看全部目录' : isHighPriorityMode ? '一键查看高优先级未完成目录' : '一键查看未完成目录'}
+            </button>
+          </div>
+          <div className="space-y-4">
+            {selectedProject.testers.map(tester => {
+              const testerJiraGroups = getTesterJiraGroups(tester);
+              const testerJiraSectionKey = `tester-jira-${tester.userId}`;
+              const isTesterJiraSectionExpanded = expandedTesterJiraSectionKey === testerJiraSectionKey;
+
+              return (
+                <div key={tester.userId} className="rounded-md border" style={{ borderColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
+                  <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr]">
+                    <div className="p-4 border-b lg:border-b-0 lg:border-r" style={{ borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' }}>
+                      <div className="flex items-start justify-between gap-3 lg:block">
+                        <div>
+                          <div className="text-sm font-semibold" style={{ color: '#0F172A' }}>{tester.username}</div>
+                          <div className="text-xs mt-1 leading-5" style={{ color: '#64748B' }}>
+                            完成 {tester.completed}/{tester.total}
+                          </div>
+                          <div className="text-[11px] leading-5" style={{ color: '#94A3B8' }}>
+                            失败 {tester.failed} · 阻塞 {tester.blocked} · 未完成 {tester.incomplete}
+                          </div>
+                        </div>
+                        <div className="text-right lg:text-left lg:mt-4">
+                          <div className="text-2xl font-bold leading-none" style={{ color: getCompletionColor(tester.completionRate) }}>
+                            {tester.completionRate}%
+                          </div>
+                          <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>总进度</div>
+                        </div>
+                      </div>
+                      <div className="h-4 rounded-sm overflow-hidden mt-4" style={{ backgroundColor: '#E2E8F0' }}>
+                        <div className="h-full rounded-sm" style={{ width: `${tester.completionRate}%`, backgroundColor: getCompletionColor(tester.completionRate) }} />
+                      </div>
+                    </div>
+                    <div className="p-4">
+                      <div className="mb-4 rounded-md border overflow-hidden" style={{ borderColor: '#E5E7EB', backgroundColor: '#FCFCFD' }}>
+                        <button
+                          type="button"
+                          onClick={() => setExpandedTesterJiraSectionKey(isTesterJiraSectionExpanded ? null : testerJiraSectionKey)}
+                          className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left"
+                        >
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-[10px]" style={{ color: '#64748B' }}>{isTesterJiraSectionExpanded ? '▼' : '▶'}</span>
+                              <span className="text-xs font-semibold" style={{ color: '#111827' }}>JIRA 汇总</span>
+                              <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: '#F3F4F6', color: '#4B5563' }}>{testerJiraGroups.length}</span>
+                            </div>
+                          </div>
+                        </button>
+                        {isTesterJiraSectionExpanded && (
+                          <div className="border-t px-3 py-3" style={{ borderColor: '#E5E7EB', backgroundColor: '#F9FAFB' }}>
+                            {testerJiraGroups.length > 0 ? (
+                              <div className="grid grid-cols-1 xl:grid-cols-2 gap-2.5">
+                                {testerJiraGroups.map(jiraGroup => {
+                                  const jiraRowKey = `${tester.userId}-${jiraGroup.link}`;
+                                  const isJiraExpanded = expandedTesterJiraKey === jiraRowKey;
+                                  return (
+                                    <div key={jiraRowKey} className="rounded-md border" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' }}>
+                                      <div className="flex items-start gap-2 px-3 py-2.5">
+                                        <button type="button" onClick={() => setExpandedTesterJiraKey(isJiraExpanded ? null : jiraRowKey)} className="min-w-0 flex-1 text-left">
+                                          <div className="flex items-center gap-2">
+                                            <span className="text-[10px]" style={{ color: '#64748B' }}>{isJiraExpanded ? '▼' : '▶'}</span>
+                                            <span className="text-xs font-medium truncate" style={{ color: '#9A3412' }} title={jiraGroup.link}>{jiraGroup.link}</span>
+                                          </div>
+                                          <div className="text-[11px] mt-1" style={{ color: '#6B7280' }}>关联 {jiraGroup.cases.length} 条用例</div>
+                                        </button>
+                                        <a href={jiraGroup.link} target="_blank" rel="noopener noreferrer" className="text-[11px] px-2 py-0.5 rounded border flex-shrink-0 hover:bg-amber-50" style={{ borderColor: '#FCD34D', color: '#B45309' }} onClick={(e) => e.stopPropagation()}>
+                                          打开
+                                        </a>
+                                      </div>
+                                      {isJiraExpanded && (
+                                        <div className="border-t px-3 py-2 space-y-1.5" style={{ borderColor: '#F3F4F6', backgroundColor: '#FFFBEB' }}>
+                                          {jiraGroup.cases.map(caseItem => {
+                                            const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
+                                            const statusMeta = getCaseStatusMeta(caseItem.testResult);
+                                            return (
+                                              <div key={`${jiraRowKey}-${caseItem.id}`} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
+                                                <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>{statusMeta.label}</span>
+                                                <span className="text-[11px] flex-shrink-0 truncate max-w-[120px]" style={{ color: '#6B7280' }} title={caseItem.moduleName}>{caseItem.moduleName}</span>
+                                                <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>{caseTitle}</span>
+                                                <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
+                                                  详情
+                                                </button>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            ) : (
+                              <div className="text-xs px-1" style={{ color: '#94A3B8' }}>
+                                {isHighPriorityMode ? '当前高优先级范围内暂无已关联 JIRA 的用例' : '当前暂无已关联 JIRA 的用例'}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                        {getVisibleModules(tester).length > 0 ? getVisibleModules(tester).map(moduleStat => {
+                          const moduleRowKey = `${tester.userId}-${moduleStat.key}`;
+                          const isModuleExpanded = expandedModuleKey === moduleRowKey;
+                          const moduleCases = getModuleCases(tester, moduleStat);
+                          return (
+                            <div key={moduleRowKey} className="rounded-md border px-3 py-2" style={{ borderColor: isModuleExpanded ? '#93C5FD' : '#E2E8F0', backgroundColor: isModuleExpanded ? '#F8FBFF' : '#FFFFFF' }}>
+                              <div className="flex items-start justify-between gap-2">
+                                <button type="button" onClick={() => setExpandedModuleKey(isModuleExpanded ? null : moduleRowKey)} className="min-w-0 text-left flex-1">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-[10px]" style={{ color: '#64748B' }}>{isModuleExpanded ? '▼' : '▶'}</span>
+                                    <span className="text-xs font-semibold truncate" style={{ color: '#0F172A' }}>{moduleStat.moduleName}</span>
+                                  </div>
+                                  <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>完成 {moduleStat.completed}/{moduleStat.total} · 未完成 {moduleStat.incomplete}</div>
+                                </button>
+                                <div className="flex flex-shrink-0 items-center gap-1">
+                                  <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#F1F5F9', color: '#334155' }}>{moduleStat.completionRate}%</span>
+                                  <button type="button" onClick={() => onNavigateTreeNode('module', moduleStat.moduleId)} className="text-xs px-2 py-0.5 rounded border hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#475569' }}>
+                                    定位
+                                  </button>
+                                </div>
+                              </div>
+                              <div className="h-2 rounded-sm overflow-hidden mt-2" style={{ backgroundColor: '#E2E8F0' }} title={getModuleTooltipText(tester, moduleStat)}>
+                                <div className="h-full rounded-sm" style={{ width: `${moduleStat.completionRate}%`, backgroundColor: getCompletionColor(moduleStat.completionRate) }} />
+                              </div>
+                              {isModuleExpanded && (
+                                <div className="mt-3 border-t pt-2 space-y-1.5" style={{ borderColor: '#E2E8F0' }}>
+                                  {moduleCases.length > 0 ? moduleCases.map(caseItem => {
+                                    const statusMeta = getCaseStatusMeta(caseItem.testResult);
+                                    const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
+                                    return (
+                                      <div key={caseItem.id} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
+                                        <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>{statusMeta.label}</span>
+                                        <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>{caseTitle}</span>
+                                        <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
+                                          详情
+                                        </button>
+                                      </div>
+                                    );
+                                  }) : (
+                                    <div className="text-xs px-2 py-2" style={{ color: '#94A3B8' }}>暂无用例</div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }) : (
+                          <div className="text-xs" style={{ color: '#9CA3AF' }}>
+                            {showOnlyIncompleteModules ? '该执行者当前没有未完成目录' : isHighPriorityMode ? '该执行者暂无高优先级用例' : '该执行者暂无用例'}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {selectedProject.testers.length === 0 && (
+              <div className="rounded-md border px-4 py-6 text-sm text-center" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
+                {isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者'}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function GanttKanbanView({
   data,
   loading,
@@ -4587,10 +5006,6 @@ function GanttKanbanView({
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
   const [sortByStartDate, setSortByStartDate] = useState(false);
-  const [showOnlyIncompleteModules, setShowOnlyIncompleteModules] = useState(false);
-  const [expandedModuleKey, setExpandedModuleKey] = useState<string | null>(null);
-  const [expandedTesterJiraSectionKey, setExpandedTesterJiraSectionKey] = useState<string | null>(null);
-  const [expandedTesterJiraKey, setExpandedTesterJiraKey] = useState<string | null>(null);
   const ganttContainerRef = useRef<HTMLDivElement>(null);
 
   const today = new Date();
@@ -4626,9 +5041,6 @@ function GanttKanbanView({
           if (typeof preferences.sortByStartDate === 'boolean') {
             setSortByStartDate(preferences.sortByStartDate);
           }
-          if (typeof preferences.showOnlyIncompleteModules === 'boolean') {
-            setShowOnlyIncompleteModules(preferences.showOnlyIncompleteModules);
-          }
           if (typeof preferences.selectedProjectId === 'number') {
             setSelectedProjectId(preferences.selectedProjectId);
           }
@@ -4658,7 +5070,6 @@ function GanttKanbanView({
           periodMonths,
           granularity,
           sortByStartDate,
-          showOnlyIncompleteModules,
           selectedProjectId,
           priorityMode,
         }),
@@ -4666,7 +5077,7 @@ function GanttKanbanView({
     }, 300);
 
     return () => window.clearTimeout(timer);
-  }, [startDate, periodMonths, granularity, sortByStartDate, showOnlyIncompleteModules, selectedProjectId, priorityMode, preferencesLoaded]);
+  }, [startDate, periodMonths, granularity, sortByStartDate, selectedProjectId, priorityMode, preferencesLoaded]);
 
   const viewStartDate = new Date(startDate);
   const viewEndDate = new Date(viewStartDate);
@@ -4752,73 +5163,11 @@ function GanttKanbanView({
 
   const selectedProject = orderedProjects.find(project => project.id === selectedProjectId) || null;
 
-  const getModuleTooltipText = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat) => (
-    `${tester.username} / ${moduleStat.moduleName}
-完成 ${moduleStat.completed}/${moduleStat.total}
-通过 ${moduleStat.passed}  失败 ${moduleStat.failed}  阻塞 ${moduleStat.blocked}  未完成 ${moduleStat.incomplete}`
-  );
-
-  const getVisibleModules = (tester: KanbanTesterStat) => {
-    const modules = showOnlyIncompleteModules
-      ? tester.modules.filter(moduleStat => moduleStat.incomplete > 0)
-      : tester.modules;
-    return modules;
-  };
-
   const getCompletionColor = (rate: number) => {
     if (rate >= 100) return '#16A34A';
     if (rate >= 70) return '#0EA5E9';
     if (rate > 0) return '#F59E0B';
     return '#CBD5E1';
-  };
-
-  const getCaseStatusMeta = (testResult: string | null) => {
-    if (testResult === 'Pass') return { label: '通过', color: '#16A34A', backgroundColor: '#DCFCE7' };
-    if (testResult === 'Fail') return { label: '失败', color: '#DC2626', backgroundColor: '#FEE2E2' };
-    if (testResult === 'Block') return { label: '阻塞', color: '#D97706', backgroundColor: '#FEF3C7' };
-    return { label: '未完成', color: '#64748B', backgroundColor: '#F1F5F9' };
-  };
-
-  const getModuleCases = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat): KanbanCaseStat[] => {
-    if (!selectedProject) return [];
-    return selectedProject.cases
-      .filter(caseItem => caseItem.testerId === tester.userId && caseItem.moduleId === moduleStat.moduleId)
-      .sort((a, b) => {
-        const left = `${a.caseNo || ''} ${a.caseName || ''}`;
-        const right = `${b.caseNo || ''} ${b.caseName || ''}`;
-        return left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' });
-      });
-  };
-
-  const getTesterJiraGroups = (tester: KanbanTesterStat) => {
-    if (!selectedProject) return [];
-
-    const jiraMap = new Map<string, {
-      link: string;
-      cases: KanbanCaseStat[];
-    }>();
-
-    for (const caseItem of selectedProject.cases) {
-      if (caseItem.testerId !== tester.userId) continue;
-      const jiraLink = caseItem.jiraLink?.trim();
-      if (!jiraLink) continue;
-
-      if (!jiraMap.has(jiraLink)) {
-        jiraMap.set(jiraLink, { link: jiraLink, cases: [] });
-      }
-      jiraMap.get(jiraLink)!.cases.push(caseItem);
-    }
-
-    return Array.from(jiraMap.values())
-      .map(group => ({
-        ...group,
-        cases: group.cases.sort((a, b) => {
-          const left = `${a.moduleName} ${a.caseNo || ''} ${a.caseName || ''}`;
-          const right = `${b.moduleName} ${b.caseNo || ''} ${b.caseName || ''}`;
-          return left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' });
-        }),
-      }))
-      .sort((a, b) => a.link.localeCompare(b.link, 'zh-CN', { numeric: true, sensitivity: 'base' }));
   };
 
   const refreshBoardView = () => {
@@ -4841,7 +5190,6 @@ function GanttKanbanView({
         periodMonths: 9,
         granularity: 'month',
         sortByStartDate: true,
-        showOnlyIncompleteModules,
         selectedProjectId,
         priorityMode,
       }),
@@ -5203,313 +5551,12 @@ function GanttKanbanView({
         </div>
 
         {selectedProject && (
-          <div className="mt-5 rounded-md border overflow-hidden" style={{ borderColor: '#DDE3EA', backgroundColor: '#FFFFFF' }}>
-            <div className="px-5 py-4 border-b" style={{ borderColor: '#E5E7EB', backgroundColor: '#F8FAFC' }}>
-              <div className="flex flex-wrap items-start justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>{selectedProject.name}</h3>
-                    {isHighPriorityMode && (
-                      <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
-                        High
-                      </span>
-                    )}
-                    <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#EEF6FF', color: '#0369A1' }}>
-                      {selectedProject.testers.length} 位执行者
-                    </span>
-                    <button
-                      onClick={() => onNavigateTreeNode('project', selectedProject.id)}
-                      className="text-xs px-2 py-0.5 rounded border hover:bg-white"
-                      style={{ borderColor: '#CBD5E1', color: '#475569' }}
-                    >
-                      定位项目
-                    </button>
-                  </div>
-                  <div className="text-xs mt-1" style={{ color: '#6B7280' }}>
-                    {selectedProject.startDate && selectedProject.endDate
-                      ? `${selectedProject.startDate} ~ ${selectedProject.endDate}`
-                      : '项目日期尚未设置'}
-                  </div>
-                  <div className="flex flex-wrap gap-2 mt-3">
-                    {selectedProject.testers.map(tester => (
-                      <span
-                        key={tester.userId}
-                        className="text-xs px-2 py-1 rounded-full"
-                        style={{ backgroundColor: '#F3F4F6', color: '#374151' }}
-                      >
-                        {tester.username}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#ECFDF5', color: '#047857' }}>
-                    完成 {selectedProject.completed}/{selectedProject.total}
-                  </span>
-                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
-                    失败 {selectedProject.failed}
-                  </span>
-                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#FFF7ED', color: '#EA580C' }}>
-                    阻塞 {selectedProject.blocked}
-                  </span>
-                  <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#F3F4F6', color: '#6B7280' }}>
-                    未完成 {selectedProject.incomplete}
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            <div className="px-5 py-4" style={{ borderColor: '#E5E7EB' }}>
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>执行者与二级目录进度</h4>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setShowOnlyIncompleteModules(value => !value)}
-                    className="text-xs px-3 py-1.5 rounded border hover:bg-gray-50"
-                    style={{ borderColor: '#D1D5DB', color: '#374151' }}
-                  >
-                    {showOnlyIncompleteModules ? '查看全部目录' : isHighPriorityMode ? '一键查看高优先级未完成目录' : '一键查看未完成目录'}
-                  </button>
-                </div>
-              </div>
-              <div className="space-y-4">
-                {selectedProject.testers.map(tester => {
-                  const testerJiraGroups = getTesterJiraGroups(tester);
-                  const testerJiraSectionKey = `tester-jira-${tester.userId}`;
-                  const isTesterJiraSectionExpanded = expandedTesterJiraSectionKey === testerJiraSectionKey;
-
-                  return (
-                    <div key={tester.userId} className="rounded-md border" style={{ borderColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
-                      <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr]">
-                      <div className="p-4 border-b lg:border-b-0 lg:border-r" style={{ borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' }}>
-                        <div className="flex items-start justify-between gap-3 lg:block">
-                          <div>
-                            <div className="text-sm font-semibold" style={{ color: '#0F172A' }}>{tester.username}</div>
-                            <div className="text-xs mt-1 leading-5" style={{ color: '#64748B' }}>
-                              完成 {tester.completed}/{tester.total}
-                            </div>
-                            <div className="text-[11px] leading-5" style={{ color: '#94A3B8' }}>
-                              失败 {tester.failed} · 阻塞 {tester.blocked} · 未完成 {tester.incomplete}
-                            </div>
-                          </div>
-                          <div className="text-right lg:text-left lg:mt-4">
-                            <div className="text-2xl font-bold leading-none" style={{ color: getCompletionColor(tester.completionRate) }}>
-                              {tester.completionRate}%
-                            </div>
-                            <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>总进度</div>
-                          </div>
-                        </div>
-                        <div className="h-4 rounded-sm overflow-hidden mt-4" style={{ backgroundColor: '#E2E8F0' }}>
-                          <div
-                            className="h-full rounded-sm"
-                            style={{
-                              width: `${tester.completionRate}%`,
-                              backgroundColor: getCompletionColor(tester.completionRate),
-                            }}
-                          />
-                        </div>
-                      </div>
-                      <div className="p-4">
-                        <div className="mb-4 rounded-md border overflow-hidden" style={{ borderColor: '#E5E7EB', backgroundColor: '#FCFCFD' }}>
-                          <button
-                            type="button"
-                            onClick={() => setExpandedTesterJiraSectionKey(isTesterJiraSectionExpanded ? null : testerJiraSectionKey)}
-                            className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left"
-                          >
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <span className="text-[10px]" style={{ color: '#64748B' }}>{isTesterJiraSectionExpanded ? '▼' : '▶'}</span>
-                                <span className="text-xs font-semibold" style={{ color: '#111827' }}>JIRA 汇总</span>
-                                <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: '#F3F4F6', color: '#4B5563' }}>
-                                  {testerJiraGroups.length}
-                                </span>
-                              </div>
-                              <div className="text-[11px] mt-1" style={{ color: '#6B7280' }}>
-                                {isHighPriorityMode ? '当前仅统计 High 用例关联的 JIRA' : '当前统计全部已关联 JIRA 的用例'}
-                              </div>
-                            </div>
-                          </button>
-                          {isTesterJiraSectionExpanded && (
-                            <div className="border-t px-3 py-3" style={{ borderColor: '#E5E7EB', backgroundColor: '#F9FAFB' }}>
-                              {testerJiraGroups.length > 0 ? (
-                                <div className="grid grid-cols-1 xl:grid-cols-2 gap-2.5">
-                                  {testerJiraGroups.map(jiraGroup => {
-                                    const jiraRowKey = `${tester.userId}-${jiraGroup.link}`;
-                                    const isJiraExpanded = expandedTesterJiraKey === jiraRowKey;
-
-                                    return (
-                                      <div key={jiraRowKey} className="rounded-md border" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' }}>
-                                        <div className="flex items-start gap-2 px-3 py-2.5">
-                                          <button
-                                            type="button"
-                                            onClick={() => setExpandedTesterJiraKey(isJiraExpanded ? null : jiraRowKey)}
-                                            className="min-w-0 flex-1 text-left"
-                                          >
-                                            <div className="flex items-center gap-2">
-                                              <span className="text-[10px]" style={{ color: '#64748B' }}>{isJiraExpanded ? '▼' : '▶'}</span>
-                                              <span className="text-xs font-medium truncate" style={{ color: '#9A3412' }} title={jiraGroup.link}>
-                                                {jiraGroup.link}
-                                              </span>
-                                            </div>
-                                            <div className="text-[11px] mt-1" style={{ color: '#6B7280' }}>
-                                              关联 {jiraGroup.cases.length} 条用例
-                                            </div>
-                                          </button>
-                                          <a
-                                            href={jiraGroup.link}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            className="text-[11px] px-2 py-0.5 rounded border flex-shrink-0 hover:bg-amber-50"
-                                            style={{ borderColor: '#FCD34D', color: '#B45309' }}
-                                            onClick={(e) => e.stopPropagation()}
-                                          >
-                                            打开
-                                          </a>
-                                        </div>
-                                        {isJiraExpanded && (
-                                          <div className="border-t px-3 py-2 space-y-1.5" style={{ borderColor: '#F3F4F6', backgroundColor: '#FFFBEB' }}>
-                                            {jiraGroup.cases.map(caseItem => {
-                                              const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
-                                              const statusMeta = getCaseStatusMeta(caseItem.testResult);
-                                              return (
-                                                <div key={`${jiraRowKey}-${caseItem.id}`} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
-                                                  <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>
-                                                    {statusMeta.label}
-                                                  </span>
-                                                  <span className="text-[11px] flex-shrink-0 truncate max-w-[120px]" style={{ color: '#6B7280' }} title={caseItem.moduleName}>
-                                                    {caseItem.moduleName}
-                                                  </span>
-                                                  <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>
-                                                    {caseTitle}
-                                                  </span>
-                                                  <button
-                                                    type="button"
-                                                    onClick={() => onNavigateCase(caseItem.id)}
-                                                    className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50"
-                                                    style={{ borderColor: '#CBD5E1', color: '#2563EB' }}
-                                                  >
-                                                    详情
-                                                  </button>
-                                                </div>
-                                              );
-                                            })}
-                                          </div>
-                                        )}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              ) : (
-                                <div className="text-xs px-1" style={{ color: '#94A3B8' }}>
-                                  {isHighPriorityMode ? '当前高优先级范围内暂无已关联 JIRA 的用例' : '当前暂无已关联 JIRA 的用例'}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                          {getVisibleModules(tester).length > 0 ? getVisibleModules(tester).map(moduleStat => {
-                            const moduleRowKey = `${tester.userId}-${moduleStat.key}`;
-                            const isModuleExpanded = expandedModuleKey === moduleRowKey;
-                            const moduleCases = getModuleCases(tester, moduleStat);
-
-                            return (
-                              <div key={moduleRowKey} className="rounded-md border px-3 py-2" style={{ borderColor: isModuleExpanded ? '#93C5FD' : '#E2E8F0', backgroundColor: isModuleExpanded ? '#F8FBFF' : '#FFFFFF' }}>
-                                <div className="flex items-start justify-between gap-2">
-                                  <button
-                                    type="button"
-                                    onClick={() => setExpandedModuleKey(isModuleExpanded ? null : moduleRowKey)}
-                                    className="min-w-0 text-left flex-1"
-                                  >
-                                    <div className="flex items-center gap-1.5">
-                                      <span className="text-[10px]" style={{ color: '#64748B' }}>{isModuleExpanded ? '▼' : '▶'}</span>
-                                      <span className="text-xs font-semibold truncate" style={{ color: '#0F172A' }}>{moduleStat.moduleName}</span>
-                                    </div>
-                                    <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>
-                                      完成 {moduleStat.completed}/{moduleStat.total} · 未完成 {moduleStat.incomplete}
-                                    </div>
-                                  </button>
-                                  <div className="flex flex-shrink-0 items-center gap-1">
-                                    <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#F1F5F9', color: '#334155' }}>
-                                      {moduleStat.completionRate}%
-                                    </span>
-                                    <button
-                                      type="button"
-                                      onClick={() => onNavigateTreeNode('module', moduleStat.moduleId)}
-                                      className="text-xs px-2 py-0.5 rounded border hover:bg-slate-50"
-                                      style={{ borderColor: '#CBD5E1', color: '#475569' }}
-                                    >
-                                      定位
-                                    </button>
-                                  </div>
-                                </div>
-                                <div
-                                  className="h-2 rounded-sm overflow-hidden mt-2"
-                                  style={{ backgroundColor: '#E2E8F0' }}
-                                  title={getModuleTooltipText(tester, moduleStat)}
-                                >
-                                  <div
-                                    className="h-full rounded-sm"
-                                    style={{
-                                      width: `${moduleStat.completionRate}%`,
-                                      backgroundColor: getCompletionColor(moduleStat.completionRate),
-                                    }}
-                                  />
-                                </div>
-                                {isModuleExpanded && (
-                                  <div className="mt-3 border-t pt-2 space-y-1.5" style={{ borderColor: '#E2E8F0' }}>
-                                    {moduleCases.length > 0 ? moduleCases.map(caseItem => {
-                                      const statusMeta = getCaseStatusMeta(caseItem.testResult);
-                                      const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
-
-                                      return (
-                                        <div key={caseItem.id} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
-                                          <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>
-                                            {statusMeta.label}
-                                          </span>
-                                          <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>
-                                            {caseTitle}
-                                          </span>
-                                          <button
-                                            type="button"
-                                            onClick={() => onNavigateCase(caseItem.id)}
-                                            className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50"
-                                            style={{ borderColor: '#CBD5E1', color: '#2563EB' }}
-                                          >
-                                            详情
-                                          </button>
-                                        </div>
-                                      );
-                                    }) : (
-                                      <div className="text-xs px-2 py-2" style={{ color: '#94A3B8' }}>暂无用例</div>
-                                    )}
-                                  </div>
-                                )}
-                              </div>
-                            );
-                          }) : (
-                            <div className="text-xs" style={{ color: '#9CA3AF' }}>
-                              {showOnlyIncompleteModules
-                                ? '该执行者当前没有未完成目录'
-                                : isHighPriorityMode
-                                  ? '该执行者暂无高优先级用例'
-                                  : '该执行者暂无用例'}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    </div>
-                  );
-                })}
-                {selectedProject.testers.length === 0 && (
-                  <div className="rounded-md border px-4 py-6 text-sm text-center" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
-                    {isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者'}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+          <ProjectExecutionSummary
+            selectedProject={selectedProject}
+            isHighPriorityMode={isHighPriorityMode}
+            onNavigateCase={onNavigateCase}
+            onNavigateTreeNode={onNavigateTreeNode}
+          />
         )}
       </div>
 
