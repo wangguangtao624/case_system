@@ -190,8 +190,55 @@ interface JiraIssueSummary {
   issueType: string;
   resolution: string;
   assigneeName: string;
+  reporterName: string;
+  statusName: string;
+  projectName: string;
+  updated: string;
   statusCategory: string;
   isDone: boolean;
+}
+
+interface JiraBoardIssue {
+  key: string;
+  link: string;
+  summary: string;
+  priority: string;
+  issueType: string;
+  resolution: string;
+  isDone: boolean;
+  statusName: string;
+  assigneeName: string;
+  reporterName: string;
+  creatorName: string;
+  created: string;
+  updated: string;
+  projectKey: string;
+  projectName: string;
+  roleMatches: string[];
+}
+
+interface JiraBoardUserSummary {
+  userId: number;
+  username: string;
+  total: number;
+  done: number;
+  open: number;
+  high: number;
+  projectsCount: number;
+  issues: JiraBoardIssue[];
+}
+
+interface JiraBoardData {
+  summary: {
+    users: number;
+    total: number;
+    done: number;
+    open: number;
+    high: number;
+  };
+  users: JiraBoardUserSummary[];
+  projects: string[];
+  generatedAt: string;
 }
 
 // ============ Main Dashboard ============
@@ -220,6 +267,9 @@ export default function DashboardPage() {
   const [kanbanData, setKanbanData] = useState<KanbanGanttData | null>(null);
   const [kanbanLoading, setKanbanLoading] = useState(false);
   const [kanbanPriorityMode, setKanbanPriorityMode] = useState<KanbanPriorityMode>('all');
+  const [showJiraBoard, setShowJiraBoard] = useState(false);
+  const [jiraBoardData, setJiraBoardData] = useState<JiraBoardData | null>(null);
+  const [jiraBoardLoading, setJiraBoardLoading] = useState(false);
   const [selectedProjectOverview, setSelectedProjectOverview] = useState<KanbanProjectStat | null>(null);
   const [selectedProjectOverviewLoading, setSelectedProjectOverviewLoading] = useState(false);
   const [selectedProjectOverviewMode, setSelectedProjectOverviewMode] = useState<KanbanPriorityMode>('all');
@@ -275,6 +325,7 @@ export default function DashboardPage() {
 
   const fetchProjectOverview = useCallback(async (projectId: number, priorityMode: KanbanPriorityMode = 'all') => {
     setShowKanban(false);
+    setShowJiraBoard(false);
     setKanbanData(null);
     setSelectedCase(null);
     setSelectedProjectOverviewLoading(true);
@@ -294,6 +345,19 @@ export default function DashboardPage() {
       setSelectedProjectOverview(null);
     } finally {
       setSelectedProjectOverviewLoading(false);
+    }
+  }, []);
+
+  const fetchJiraBoardData = useCallback(async () => {
+    setJiraBoardLoading(true);
+    try {
+      const response = await fetch('/api/jira/board');
+      const result = await response.json();
+      setJiraBoardData(result);
+    } catch (error) {
+      console.error('Load jira board error:', error);
+    } finally {
+      setJiraBoardLoading(false);
     }
   }, []);
 
@@ -368,6 +432,7 @@ export default function DashboardPage() {
 
   const handleSelectCase = useCallback(async (node: TreeNode) => {
     setShowKanban(false);
+    setShowJiraBoard(false);
     setKanbanData(null);
     setSelectedProjectOverview(null);
     setSelectedNodeId(node.id);
@@ -442,6 +507,7 @@ export default function DashboardPage() {
 
   const handleNavigateTreeNode = useCallback(async (type: 'project' | 'module', dbId: number) => {
     setShowKanban(false);
+    setShowJiraBoard(false);
     setKanbanData(null);
     setSelectedCase(null);
     let path = findNodePathByDbId(tree, type, dbId);
@@ -460,6 +526,7 @@ export default function DashboardPage() {
 
   const handleOpenCaseById = useCallback(async (caseId: number) => {
     setShowKanban(false);
+    setShowJiraBoard(false);
     setKanbanData(null);
     const matchedPath = findNodePathByDbId(tree, 'case', caseId);
     const matchedNode = matchedPath?.[matchedPath.length - 1] || findCaseNodeByDbId(tree, caseId);
@@ -692,8 +759,18 @@ export default function DashboardPage() {
                 setSelectedCase(null);
                 setSelectedProjectOverview(null);
                 setSelectedNodeId(null);
+                setShowJiraBoard(false);
                 setShowKanban(true);
                 fetchKanbanData(kanbanPriorityMode);
+              }}
+              onOpenJiraBoard={() => {
+                setSelectedCase(null);
+                setSelectedProjectOverview(null);
+                setSelectedNodeId(null);
+                setShowKanban(false);
+                setKanbanData(null);
+                setShowJiraBoard(true);
+                fetchJiraBoardData();
               }}
               onDeleteArchived={handleDeleteArchived}
             />
@@ -742,7 +819,14 @@ export default function DashboardPage() {
 
         {/* Content Area */}
         <main className="flex-1 overflow-auto" style={{ backgroundColor: '#FFFFFF' }}>
-          {showKanban ? (
+          {showJiraBoard ? (
+            <JiraBoardView
+              data={jiraBoardData}
+              loading={jiraBoardLoading}
+              onClose={() => { setShowJiraBoard(false); setJiraBoardData(null); }}
+              onRefresh={fetchJiraBoardData}
+            />
+          ) : showKanban ? (
             <GanttKanbanView
               data={kanbanData}
               loading={kanbanLoading}
@@ -821,6 +905,7 @@ export default function DashboardPage() {
               onNavigateCase={handleOpenCaseById}
               onNavigateTreeNode={handleNavigateTreeNode}
               onPriorityModeChange={(priorityMode) => fetchProjectOverview(selectedProjectOverview.id, priorityMode)}
+              allUsers={allUsers}
             />
           ) : selectedProjectOverviewLoading ? (
             <div className="flex items-center justify-center h-full" style={{ color: '#999' }}>
@@ -1066,6 +1151,7 @@ function SidebarTree({
   onProjectFilterChange,
   onArchive,
   onOpenKanban,
+  onOpenJiraBoard,
   onDeleteArchived,
 }: {
   username: string;
@@ -1087,6 +1173,7 @@ function SidebarTree({
   onProjectFilterChange: (value: string) => void;
   onArchive: (projectId: number, projectName: string) => void;
   onOpenKanban: () => void;
+  onOpenJiraBoard: () => void;
   onDeleteArchived: (projectId: number) => Promise<void> | void;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(null);
@@ -1578,14 +1665,24 @@ function SidebarTree({
         {/* Action Buttons */}
         <div className="flex items-center gap-1">
           {projectFilter === 'active' && (
-            <button
-              onClick={onOpenKanban}
-              className="w-full text-xs px-2 py-1.5 rounded border hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"
-              style={{ borderColor: '#0073E6', color: '#0073E6' }}
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
-              项目看板
-            </button>
+            <div className="w-full space-y-1">
+              <button
+                onClick={onOpenKanban}
+                className="w-full text-xs px-2 py-1.5 rounded border hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"
+                style={{ borderColor: '#0073E6', color: '#0073E6' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
+                项目看板
+              </button>
+              <button
+                onClick={onOpenJiraBoard}
+                className="w-full text-xs px-2 py-1.5 rounded border hover:bg-orange-50 transition-colors flex items-center justify-center gap-1"
+                style={{ borderColor: '#F59E0B', color: '#B45309' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><polyline points="7.5 4.21 12 6.81 16.5 4.21" /><polyline points="7.5 19.79 7.5 14.6 3 12" /><polyline points="21 12 16.5 14.6 16.5 19.79" /><polyline points="12 22.08 12 17" /><polyline points="12 17 16.5 14.6" /><polyline points="12 17 7.5 14.6" /><polyline points="12 6.81 12 12" /></svg>
+                JIRA看板
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -4637,17 +4734,21 @@ function ProjectExecutionSummary({
   onNavigateCase,
   onNavigateTreeNode,
   onPriorityModeChange,
+  allUsers,
 }: {
   selectedProject: KanbanProjectStat;
   isHighPriorityMode: boolean;
   onNavigateCase: (caseId: number) => void;
   onNavigateTreeNode: (type: 'project' | 'module', dbId: number) => void;
   onPriorityModeChange?: (priorityMode: KanbanPriorityMode) => void;
+  allUsers: UserItem[];
 }) {
   const [showOnlyIncompleteModules, setShowOnlyIncompleteModules] = useState(false);
   const [expandedModuleKey, setExpandedModuleKey] = useState<string | null>(null);
-  const [expandedTesterJiraSectionKey, setExpandedTesterJiraSectionKey] = useState<string | null>(null);
-  const [expandedTesterJiraKey, setExpandedTesterJiraKey] = useState<string | null>(null);
+  const [expandedProjectJiraKey, setExpandedProjectJiraKey] = useState<string | null>(null);
+  const [projectJiraReporterFilter, setProjectJiraReporterFilter] = useState<string>('all');
+  const [projectJiraStatusFilter, setProjectJiraStatusFilter] = useState<'all' | 'open' | 'pending'>('open');
+  const [testerFilter, setTesterFilter] = useState<string>('all');
   const [jiraIssueMap, setJiraIssueMap] = useState<Record<string, JiraIssueSummary>>({});
 
   useEffect(() => {
@@ -4729,6 +4830,13 @@ function ProjectExecutionSummary({
     return { label: resolution || '未完成', color: '#B45309', backgroundColor: '#FEF3C7' };
   };
 
+  const formatDateTime = (value: string) => {
+    if (!value) return '--';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+
   const getModuleTooltipText = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat) => (
     `${tester.username} / ${moduleStat.moduleName}
 完成 ${moduleStat.completed}/${moduleStat.total}
@@ -4741,6 +4849,10 @@ function ProjectExecutionSummary({
       : tester.modules;
   };
 
+  const visibleTesters = selectedProject.testers.filter(tester => (
+    testerFilter === 'all' || String(tester.userId) === testerFilter
+  ));
+
   const getModuleCases = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat): KanbanCaseStat[] => {
     return selectedProject.cases
       .filter(caseItem => caseItem.testerId === tester.userId && caseItem.moduleId === moduleStat.moduleId)
@@ -4751,10 +4863,9 @@ function ProjectExecutionSummary({
       });
   };
 
-  const getTesterJiraGroups = (tester: KanbanTesterStat) => {
+  const getProjectJiraGroups = () => {
     const jiraMap = new Map<string, { link: string; cases: KanbanCaseStat[] }>();
     for (const caseItem of selectedProject.cases) {
-      if (caseItem.testerId !== tester.userId) continue;
       const jiraLink = caseItem.jiraLink?.trim();
       if (!jiraLink) continue;
       if (!jiraMap.has(jiraLink)) jiraMap.set(jiraLink, { link: jiraLink, cases: [] });
@@ -4762,6 +4873,33 @@ function ProjectExecutionSummary({
     }
     return Array.from(jiraMap.values());
   };
+
+  const systemUsernames = new Set(allUsers.map(user => user.username));
+
+  const projectJiraGroups = getProjectJiraGroups()
+    .filter(jiraGroup => {
+      const issue = jiraIssueMap[jiraGroup.link];
+      if (!issue) return projectJiraStatusFilter === 'all';
+      const reporterMatch = projectJiraReporterFilter === 'all' || issue.reporterName === projectJiraReporterFilter;
+      const statusMatch = projectJiraStatusFilter === 'all'
+        || (projectJiraStatusFilter === 'open' && !issue.isDone)
+        || (projectJiraStatusFilter === 'pending' && !issue.isDone && systemUsernames.has(issue.assigneeName));
+      return reporterMatch && statusMatch;
+    })
+    .sort((left, right) => {
+      const leftIssue = jiraIssueMap[left.link];
+      const rightIssue = jiraIssueMap[right.link];
+      const leftDone = leftIssue?.isDone ? 1 : 0;
+      const rightDone = rightIssue?.isDone ? 1 : 0;
+      if (leftDone !== rightDone) return leftDone - rightDone;
+      return (rightIssue?.updated || '').localeCompare(leftIssue?.updated || '');
+    });
+
+  const projectJiraReporters = Array.from(new Set(
+    getProjectJiraGroups()
+      .map(group => jiraIssueMap[group.link]?.reporterName)
+      .filter((name): name is string => Boolean(name))
+  )).sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
   return (
     <div className="p-5">
@@ -4872,23 +5010,165 @@ function ProjectExecutionSummary({
           </div>
         </div>
 
-        <div className="px-5 py-4">
+        <div className="px-5 py-4 space-y-5">
+          <div>
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>JIRA 汇总</h4>
+                <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: '#F3F4F6', color: '#4B5563' }}>{projectJiraGroups.length}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={projectJiraReporterFilter}
+                  onChange={(e) => setProjectJiraReporterFilter(e.target.value)}
+                  className="text-xs px-2 py-1.5 border rounded"
+                  style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+                >
+                  <option value="all">全部提单人</option>
+                  {projectJiraReporters.map(reporter => (
+                    <option key={reporter} value={reporter}>{reporter}</option>
+                  ))}
+                </select>
+                <select
+                  value={projectJiraStatusFilter}
+                  onChange={(e) => setProjectJiraStatusFilter(e.target.value as 'all' | 'open' | 'pending')}
+                  className="text-xs px-2 py-1.5 border rounded min-w-[148px]"
+                  style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+                >
+                  <option value="open">查看未完成</option>
+                  <option value="all">查看全部</option>
+                  <option value="pending">查看待处理</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-2.5">
+              {projectJiraGroups.length > 0 ? projectJiraGroups.map(jiraGroup => {
+                const jiraRowKey = `project-jira-${jiraGroup.link}`;
+                const isJiraExpanded = expandedProjectJiraKey === jiraRowKey;
+                const jiraIssue = jiraIssueMap[jiraGroup.link];
+                const issueKey = jiraIssue?.issueKey || 'JIRA';
+                const issueSummary = jiraIssue?.summary || '正在获取 JIRA 标题...';
+                const issuePriority = jiraIssue?.priority || '未知优先级';
+                const issueType = jiraIssue?.issueType || '未知类型';
+                const resolution = jiraIssue?.resolution || '未解决';
+                const assigneeName = jiraIssue?.assigneeName || '未分配';
+                const reporterName = jiraIssue?.reporterName || '未知';
+                const statusName = jiraIssue?.statusName || '未知';
+                const projectName = jiraIssue?.projectName || '未知项目';
+                const updated = jiraIssue?.updated || '';
+                const issueDone = jiraIssue?.isDone || false;
+                const priorityMeta = getJiraPriorityMeta(issuePriority);
+                const issueTypeMeta = getJiraIssueTypeMeta(issueType);
+                const resolutionMeta = getJiraResolutionMeta(resolution, issueDone);
+                return (
+                  <div
+                    key={jiraRowKey}
+                    className="rounded-xl border px-3 py-3"
+                    style={{
+                      borderColor: issueDone ? '#D1D5DB' : '#FED7AA',
+                      backgroundColor: issueDone ? '#F3F4F6' : '#FFFFFF',
+                    }}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedProjectJiraKey(isJiraExpanded ? null : jiraRowKey)}
+                        className="min-w-0 flex-1 text-left"
+                      >
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-[10px]" style={{ color: '#64748B' }}>{isJiraExpanded ? '▼' : '▶'}</span>
+                          <span className="text-xs font-semibold flex-shrink-0" style={{ color: issueDone ? '#6B7280' : '#DC2626' }} title={issueKey}>
+                            【{issueKey}】
+                          </span>
+                          <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: issueTypeMeta.backgroundColor, color: issueTypeMeta.color }} title={issueType}>
+                            {issueTypeMeta.label}
+                          </span>
+                          <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: resolutionMeta.backgroundColor, color: resolutionMeta.color }}>
+                            {resolutionMeta.label}
+                          </span>
+                        </div>
+                        <div className="text-sm font-medium mt-2 leading-6" style={{ color: issueDone ? '#6B7280' : '#1F2937' }} title={issueSummary}>
+                          {issueSummary}
+                        </div>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px]" style={{ color: '#6B7280' }}>
+                          <span>项目：{projectName}</span>
+                          <span>状态：{statusName}</span>
+                          <span>经办：{assigneeName}</span>
+                          <span>提单：{reporterName}</span>
+                          <span>更新：{formatDateTime(updated)}</span>
+                        </div>
+                      </button>
+                      <div className="flex items-start gap-2 flex-shrink-0">
+                        <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: priorityMeta.backgroundColor, color: priorityMeta.color }} title={issuePriority}>
+                          {priorityMeta.label}
+                        </span>
+                        <a href={jiraGroup.link} target="_blank" rel="noopener noreferrer" className="text-[11px] px-2.5 py-1 rounded border flex-shrink-0 hover:bg-amber-50" style={{ borderColor: '#FCD34D', color: '#B45309' }} onClick={(e) => e.stopPropagation()}>
+                          打开
+                        </a>
+                      </div>
+                    </div>
+                    {isJiraExpanded && (
+                      <div
+                        className="border-t mt-3 pt-2 space-y-1.5"
+                        style={{
+                          borderColor: issueDone ? '#E5E7EB' : '#F3F4F6',
+                          backgroundColor: issueDone ? '#F9FAFB' : '#FFF7ED',
+                        }}
+                      >
+                        {jiraGroup.cases.map(caseItem => {
+                          const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
+                          const statusMeta = getCaseStatusMeta(caseItem.testResult);
+                          return (
+                            <div key={`${jiraRowKey}-${caseItem.id}`} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
+                              <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>{statusMeta.label}</span>
+                              <span className="text-[11px] flex-shrink-0 truncate max-w-[120px]" style={{ color: '#6B7280' }} title={caseItem.moduleName}>{caseItem.moduleName}</span>
+                              <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>{caseTitle}</span>
+                              <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
+                                详情
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              }) : (
+                <div className="rounded-md border px-4 py-6 text-sm text-center xl:col-span-2" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
+                  当前筛选条件下暂无已关联 JIRA 的用例
+                </div>
+              )}
+            </div>
+          </div>
+
           <div className="flex items-center justify-between mb-3">
             <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>执行者与二级目录进度</h4>
-            <button
-              onClick={() => setShowOnlyIncompleteModules(value => !value)}
-              className="text-xs px-3 py-1.5 rounded border hover:bg-gray-50"
-              style={{ borderColor: '#D1D5DB', color: '#374151' }}
-            >
-              {showOnlyIncompleteModules ? '查看全部目录' : isHighPriorityMode ? '一键查看高优先级未完成目录' : '一键查看未完成目录'}
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={testerFilter}
+                onChange={(e) => setTesterFilter(e.target.value)}
+                className="text-xs px-2 py-1.5 border rounded"
+                style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+              >
+                <option value="all">全部执行者</option>
+                {selectedProject.testers.map(tester => (
+                  <option key={tester.userId} value={String(tester.userId)}>{tester.username}</option>
+                ))}
+              </select>
+              <select
+                value={showOnlyIncompleteModules ? 'incomplete' : 'all'}
+                onChange={(e) => setShowOnlyIncompleteModules(e.target.value === 'incomplete')}
+                className="text-xs px-2 py-1.5 border rounded min-w-[148px]"
+                style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+              >
+                <option value="all">查看全部</option>
+                <option value="incomplete">{isHighPriorityMode ? '只看高优先级未完成' : '只看未完成'}</option>
+              </select>
+            </div>
           </div>
           <div className="space-y-4">
-            {selectedProject.testers.map(tester => {
-              const testerJiraGroups = getTesterJiraGroups(tester);
-              const testerJiraSectionKey = `tester-jira-${tester.userId}`;
-              const isTesterJiraSectionExpanded = expandedTesterJiraSectionKey === testerJiraSectionKey;
-
+            {visibleTesters.map(tester => {
               return (
                 <div key={tester.userId} className="rounded-md border" style={{ borderColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
                   <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr]">
@@ -4915,127 +5195,6 @@ function ProjectExecutionSummary({
                       </div>
                     </div>
                     <div className="p-4">
-                      <div className="mb-4 rounded-md border overflow-hidden" style={{ borderColor: '#E5E7EB', backgroundColor: '#FCFCFD' }}>
-                        <button
-                          type="button"
-                          onClick={() => setExpandedTesterJiraSectionKey(isTesterJiraSectionExpanded ? null : testerJiraSectionKey)}
-                          className="w-full flex items-center justify-between gap-3 px-3 py-2.5 text-left"
-                        >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-[10px]" style={{ color: '#64748B' }}>{isTesterJiraSectionExpanded ? '▼' : '▶'}</span>
-                              <span className="text-xs font-semibold" style={{ color: '#111827' }}>JIRA 汇总</span>
-                              <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: '#F3F4F6', color: '#4B5563' }}>{testerJiraGroups.length}</span>
-                            </div>
-                          </div>
-                        </button>
-                        {isTesterJiraSectionExpanded && (
-                          <div className="border-t px-3 py-3" style={{ borderColor: '#E5E7EB', backgroundColor: '#F9FAFB' }}>
-                            {testerJiraGroups.length > 0 ? (
-                              <div className="grid grid-cols-1 xl:grid-cols-2 gap-2.5">
-                                {testerJiraGroups.map(jiraGroup => {
-                                  const jiraRowKey = `${tester.userId}-${jiraGroup.link}`;
-                                  const isJiraExpanded = expandedTesterJiraKey === jiraRowKey;
-                                  const jiraIssue = jiraIssueMap[jiraGroup.link];
-                                  const issueKey = jiraIssue?.issueKey || 'JIRA';
-                                  const issueSummary = jiraIssue?.summary || '正在获取 JIRA 标题...';
-                                  const issuePriority = jiraIssue?.priority || '未知优先级';
-                                  const issueType = jiraIssue?.issueType || '未知类型';
-                                  const resolution = jiraIssue?.resolution || '未解决';
-                                  const assigneeName = jiraIssue?.assigneeName || '未分配';
-                                  const issueDone = jiraIssue?.isDone || false;
-                                  const priorityMeta = getJiraPriorityMeta(issuePriority);
-                                  const issueTypeMeta = getJiraIssueTypeMeta(issueType);
-                                  const resolutionMeta = getJiraResolutionMeta(resolution, issueDone);
-                                  return (
-                                    <div
-                                      key={jiraRowKey}
-                                      className="rounded-md border"
-                                      style={{
-                                        borderColor: issueDone ? '#D1D5DB' : '#E5E7EB',
-                                        backgroundColor: issueDone ? '#F3F4F6' : '#FFFFFF',
-                                      }}
-                                    >
-                                      <div className="flex items-start gap-2 px-3 py-2.5">
-                                        <button type="button" onClick={() => setExpandedTesterJiraKey(isJiraExpanded ? null : jiraRowKey)} className="min-w-0 flex-1 text-left">
-                                          <div className="flex items-center gap-x-3 gap-y-1 min-w-0 flex-wrap">
-                                            <span className="text-[10px]" style={{ color: '#64748B' }}>{isJiraExpanded ? '▼' : '▶'}</span>
-                                            <span
-                                              className="text-xs font-semibold flex-shrink-0"
-                                              style={{ color: issueDone ? '#6B7280' : '#DC2626' }}
-                                              title={issueKey}
-                                            >
-                                              【{issueKey}】
-                                            </span>
-                                            <span
-                                              className="text-[11px] px-1.5 py-0.5 rounded-full"
-                                              style={{ backgroundColor: issueTypeMeta.backgroundColor, color: issueTypeMeta.color }}
-                                              title={issueType}
-                                            >
-                                              {issueTypeMeta.label}
-                                            </span>
-                                            <span
-                                              className="text-[11px] px-1.5 py-0.5 rounded-full"
-                                              style={{ backgroundColor: resolutionMeta.backgroundColor, color: resolutionMeta.color }}
-                                            >
-                                              解决结果：{resolutionMeta.label}
-                                            </span>
-                                            <span className="text-[11px]" style={{ color: '#7C3AED' }}>当前处理人：{assigneeName}</span>
-                                          </div>
-                                          <div className="text-xs mt-1.5 truncate" style={{ color: issueDone ? '#6B7280' : '#1D4ED8' }} title={issueSummary}>
-                                            {issueSummary}
-                                          </div>
-                                          <div className="text-[11px] mt-1" style={{ color: '#6B7280' }}>
-                                            关联 {jiraGroup.cases.length} 条用例
-                                          </div>
-                                        </button>
-                                        <span
-                                          className="text-[11px] px-1.5 py-0.5 rounded-full flex-shrink-0 self-start"
-                                          style={{ backgroundColor: priorityMeta.backgroundColor, color: priorityMeta.color }}
-                                          title={issuePriority}
-                                        >
-                                          {priorityMeta.label}
-                                        </span>
-                                        <a href={jiraGroup.link} target="_blank" rel="noopener noreferrer" className="text-[11px] px-2 py-0.5 rounded border flex-shrink-0 hover:bg-amber-50" style={{ borderColor: '#FCD34D', color: '#B45309' }} onClick={(e) => e.stopPropagation()}>
-                                          打开
-                                        </a>
-                                      </div>
-                                      {isJiraExpanded && (
-                                        <div
-                                          className="border-t px-3 py-2 space-y-1.5"
-                                          style={{
-                                            borderColor: issueDone ? '#E5E7EB' : '#F3F4F6',
-                                            backgroundColor: issueDone ? '#F9FAFB' : '#FFFBEB',
-                                          }}
-                                        >
-                                          {jiraGroup.cases.map(caseItem => {
-                                            const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
-                                            const statusMeta = getCaseStatusMeta(caseItem.testResult);
-                                            return (
-                                              <div key={`${jiraRowKey}-${caseItem.id}`} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
-                                                <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>{statusMeta.label}</span>
-                                                <span className="text-[11px] flex-shrink-0 truncate max-w-[120px]" style={{ color: '#6B7280' }} title={caseItem.moduleName}>{caseItem.moduleName}</span>
-                                                <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>{caseTitle}</span>
-                                                <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
-                                                  详情
-                                                </button>
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            ) : (
-                              <div className="text-xs px-1" style={{ color: '#94A3B8' }}>
-                                {isHighPriorityMode ? '当前高优先级范围内暂无已关联 JIRA 的用例' : '当前暂无已关联 JIRA 的用例'}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
                       <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
                         {getVisibleModules(tester).length > 0 ? getVisibleModules(tester).map(moduleStat => {
                           const moduleRowKey = `${tester.userId}-${moduleStat.key}`;
@@ -5093,13 +5252,445 @@ function ProjectExecutionSummary({
                 </div>
               );
             })}
-            {selectedProject.testers.length === 0 && (
+            {visibleTesters.length === 0 && (
               <div className="rounded-md border px-4 py-6 text-sm text-center" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
-                {isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者'}
+                {testerFilter === 'all'
+                  ? (isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者')
+                  : '当前筛选条件下暂无执行者任务'}
               </div>
             )}
           </div>
         </div>
+      </div>
+    </div>
+  );
+}
+
+function JiraBoardView({
+  data,
+  loading,
+  onClose,
+  onRefresh,
+}: {
+  data: JiraBoardData | null;
+  loading: boolean;
+  onClose: () => void;
+  onRefresh: () => void;
+}) {
+  const [ownershipMode, setOwnershipMode] = useState<'related' | 'assignee' | 'reporter' | 'creator'>('related');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'done'>('open');
+  const [userFilter, setUserFilter] = useState<string>('all');
+  const [projectFilter, setProjectFilter] = useState<string>('all');
+  const [issueTypeFilters, setIssueTypeFilters] = useState<Array<'需求' | '故障' | '任务' | '子任务' | 'Epic'>>([]);
+  const [keyword, setKeyword] = useState('');
+  const [showPendingOnly, setShowPendingOnly] = useState(false);
+  const [expandedUserKey, setExpandedUserKey] = useState<string | null>(null);
+
+  const getPriorityMeta = (priority: string) => {
+    const normalized = priority.trim().toLowerCase();
+    if (normalized === 'highest') return { color: '#FFFFFF', backgroundColor: '#991B1B' };
+    if (normalized === 'high') return { color: '#FFFFFF', backgroundColor: '#DC2626' };
+    if (normalized === 'medium') return { color: '#9A3412', backgroundColor: '#FFEDD5' };
+    if (normalized === 'low') return { color: '#1D4ED8', backgroundColor: '#DBEAFE' };
+    return { color: '#475569', backgroundColor: '#E2E8F0' };
+  };
+
+  const getIssueTypeMeta = (issueType: string) => {
+    const normalized = issueType.trim().toLowerCase();
+    if (normalized.includes('故障') || normalized.includes('bug')) return { color: '#B91C1C', backgroundColor: '#FEE2E2' };
+    if (normalized.includes('需求') || normalized.includes('story') || normalized.includes('task')) return { color: '#065F46', backgroundColor: '#D1FAE5' };
+    return { color: '#4338CA', backgroundColor: '#EDE9FE' };
+  };
+
+  const formatDateTime = (value: string) => {
+    if (!value) return '--';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+
+  const matchesIssueTypeFilter = (issueType: string) => {
+    if (issueTypeFilters.length === 0) return true;
+    const normalized = issueType.trim().toLowerCase();
+    return issueTypeFilters.some(filter => {
+      if (filter === '需求') return normalized.includes('需求') || normalized.includes('story');
+      if (filter === '故障') return normalized.includes('故障') || normalized.includes('bug');
+      if (filter === '任务') return normalized === '任务' || normalized === 'task';
+      if (filter === '子任务') return normalized.includes('子任务') || normalized.includes('sub-task') || normalized.includes('subtask');
+      if (filter === 'Epic') return normalized === 'epic';
+      return false;
+    });
+  };
+
+  const toggleIssueTypeFilter = (value: '需求' | '故障' | '任务' | '子任务' | 'Epic') => {
+    setIssueTypeFilters(prev => (
+      prev.includes(value)
+        ? prev.filter(item => item !== value)
+        : [...prev, value]
+    ));
+  };
+
+  const users = data?.users || [];
+  const systemUsernames = new Set(users.map(user => user.username));
+  const filteredUsers = users
+    .filter(user => userFilter === 'all' || String(user.userId) === userFilter)
+    .map(user => {
+      const issues = user.issues.filter(issue => {
+        const modeMatch = ownershipMode === 'related' || issue.roleMatches.includes(ownershipMode);
+        const statusMatch = statusFilter === 'all' || (statusFilter === 'done' ? issue.isDone : !issue.isDone);
+        const projectMatch = projectFilter === 'all' || issue.projectName === projectFilter;
+        const issueTypeMatch = matchesIssueTypeFilter(issue.issueType);
+        const pendingMatch = !showPendingOnly || (!issue.isDone && systemUsernames.has(issue.assigneeName));
+        const text = `${issue.key} ${issue.summary} ${issue.projectName} ${issue.assigneeName} ${issue.reporterName} ${issue.creatorName}`.toLowerCase();
+        const keywordMatch = !keyword.trim() || text.includes(keyword.trim().toLowerCase());
+        return modeMatch && statusMatch && projectMatch && issueTypeMatch && pendingMatch && keywordMatch;
+      });
+
+      return {
+        ...user,
+        filteredIssues: issues,
+        filteredOpen: issues.filter(issue => !issue.isDone).length,
+        filteredDone: issues.filter(issue => issue.isDone).length,
+      };
+    })
+    .filter(user => user.filteredIssues.length > 0)
+    .sort((a, b) => b.filteredIssues.length - a.filteredIssues.length || a.username.localeCompare(b.username, 'zh-CN'));
+
+  const summary = filteredUsers.reduce((acc, user) => ({
+    users: acc.users + 1,
+    total: acc.total + user.filteredIssues.length,
+    open: acc.open + user.filteredOpen,
+    done: acc.done + user.filteredDone,
+    high: acc.high + user.filteredIssues.filter(issue => ['high', 'highest'].includes(issue.priority.toLowerCase())).length,
+  }), { users: 0, total: 0, open: 0, done: 0, high: 0 });
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full" style={{ color: '#999' }}>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 mx-auto mb-4" style={{ borderColor: '#D97706' }}></div>
+          <p className="text-sm">加载 JIRA 看板...</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex items-center justify-between px-6 py-3 border-b" style={{ borderColor: '#F3E8D6', background: 'linear-gradient(135deg, #FFF8F1 0%, #FFFFFF 58%, #FFFBEB 100%)' }}>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center justify-center w-8 h-8 rounded-lg" style={{ backgroundColor: '#F59E0B' }}>
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><path d="M12 22.08V12" /><path d="m3.27 6.96 8.73 5.05 8.73-5.05" /></svg>
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="font-bold text-sm" style={{ color: '#1F2937' }}>JIRA 看板</span>
+              <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEF3C7', color: '#B45309' }}>
+                测试用户问题单总览
+              </span>
+            </div>
+            <div className="text-xs mt-1" style={{ color: '#7C6F64' }}>
+              最近同步：{formatDateTime(data.generatedAt)} · 共覆盖 {data.summary.users} 位系统用户
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onRefresh}
+            className="px-3 py-1.5 text-xs rounded border hover:bg-orange-50 transition-colors"
+            style={{ borderColor: '#FCD34D', color: '#B45309' }}
+          >
+            刷新数据
+          </button>
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-xs rounded hover:bg-gray-100 transition-colors flex items-center gap-1"
+            style={{ color: '#666' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+            关闭看板
+          </button>
+        </div>
+      </div>
+
+      <div className="px-6 py-3 border-b" style={{ borderColor: '#F3E8D6', backgroundColor: '#FFFDF9' }}>
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+          {[
+            { label: '可见用户', value: summary.users, color: '#0369A1', bg: '#E0F2FE' },
+            { label: '问题单总数', value: summary.total, color: '#7C3AED', bg: '#F3E8FF' },
+            { label: '未完成', value: summary.open, color: '#B45309', bg: '#FEF3C7' },
+            { label: '已完成', value: summary.done, color: '#166534', bg: '#DCFCE7' },
+            { label: '高优先级', value: summary.high, color: '#B91C1C', bg: '#FEE2E2' },
+          ].map(card => (
+            <div key={card.label} className="rounded-xl border px-4 py-3" style={{ borderColor: '#F1E3CF', backgroundColor: '#FFFFFF' }}>
+              <div className="text-xs" style={{ color: '#6B7280' }}>{card.label}</div>
+              <div className="mt-2 flex items-center justify-between">
+                <div className="text-2xl font-bold leading-none" style={{ color: card.color }}>{card.value}</div>
+                <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: card.bg, color: card.color }}>{card.label}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3 mt-4">
+          <button
+            onClick={() => {
+              setShowPendingOnly(value => {
+                const next = !value;
+                if (next) {
+                  setStatusFilter('open');
+                  setOwnershipMode('assignee');
+                  setIssueTypeFilters([]);
+                } else {
+                  setStatusFilter('all');
+                  setOwnershipMode('related');
+                  setIssueTypeFilters([]);
+                }
+                return next;
+              });
+            }}
+            className="text-xs px-3.5 py-1.5 rounded border transition-colors font-semibold shadow-sm"
+            style={{
+              borderColor: showPendingOnly ? '#FCA5A5' : '#F59E0B',
+              backgroundColor: showPendingOnly ? '#DC2626' : '#FFF7ED',
+              color: showPendingOnly ? '#FFFFFF' : '#B45309',
+            }}
+          >
+            一键查看待处理
+          </button>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium" style={{ color: '#374151' }}>统计口径</span>
+            <div className="flex items-center rounded border overflow-hidden" style={{ borderColor: '#D1D5DB' }}>
+              {[
+                { key: 'related', label: '全部关联' },
+                { key: 'assignee', label: '经办人' },
+                { key: 'reporter', label: '提单人' },
+              ].map(option => (
+                <button
+                  key={option.key}
+                  onClick={() => {
+                    setOwnershipMode(option.key as 'related' | 'assignee' | 'reporter');
+                    setShowPendingOnly(false);
+                  }}
+                  className="text-xs px-3 py-1 transition-colors"
+                  style={{
+                    backgroundColor: ownershipMode === option.key ? '#F59E0B' : '#FFFFFF',
+                    color: ownershipMode === option.key ? '#FFFFFF' : '#374151',
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium" style={{ color: '#374151' }}>状态</span>
+            <div className="flex items-center rounded border overflow-hidden" style={{ borderColor: '#D1D5DB' }}>
+              {[
+                { key: 'all', label: '全部状态' },
+                { key: 'open', label: '只看未完成' },
+                { key: 'done', label: '只看已完成' },
+              ].map(option => (
+                <button
+                  key={option.key}
+                  onClick={() => {
+                    setStatusFilter(option.key as 'all' | 'open' | 'done');
+                    setShowPendingOnly(false);
+                  }}
+                  className="text-xs px-3 py-1 transition-colors"
+                  style={{
+                    backgroundColor: statusFilter === option.key ? '#0F766E' : '#FFFFFF',
+                    color: statusFilter === option.key ? '#FFFFFF' : '#374151',
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium" style={{ color: '#374151' }}>类型</span>
+            <div className="flex items-center rounded border overflow-hidden flex-wrap" style={{ borderColor: '#D1D5DB' }}>
+              <button
+                onClick={() => setIssueTypeFilters([])}
+                className="text-xs px-3 py-1 transition-colors"
+                style={{
+                  backgroundColor: issueTypeFilters.length === 0 ? '#7C3AED' : '#FFFFFF',
+                  color: issueTypeFilters.length === 0 ? '#FFFFFF' : '#374151',
+                }}
+              >
+                全部
+              </button>
+              {[
+                { key: '需求', label: '需求' },
+                { key: '故障', label: '故障' },
+                { key: '任务', label: '任务' },
+                { key: '子任务', label: '子任务' },
+                { key: 'Epic', label: 'Epic' },
+              ].map(option => (
+                <button
+                  key={option.key}
+                  onClick={() => {
+                    toggleIssueTypeFilter(option.key as '需求' | '故障' | '任务' | '子任务' | 'Epic');
+                    setShowPendingOnly(false);
+                  }}
+                  className="text-xs px-3 py-1 transition-colors"
+                  style={{
+                    backgroundColor: issueTypeFilters.includes(option.key as '需求' | '故障' | '任务' | '子任务' | 'Epic') ? '#7C3AED' : '#FFFFFF',
+                    color: issueTypeFilters.includes(option.key as '需求' | '故障' | '任务' | '子任务' | 'Epic') ? '#FFFFFF' : '#374151',
+                  }}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <select
+            value={userFilter}
+            onChange={(e) => setUserFilter(e.target.value)}
+            className="text-xs px-2 py-1.5 border rounded"
+            style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+          >
+            <option value="all">全部用户</option>
+            {data.users.map(user => (
+              <option key={user.userId} value={String(user.userId)}>{user.username}</option>
+            ))}
+          </select>
+
+          <select
+            value={projectFilter}
+            onChange={(e) => setProjectFilter(e.target.value)}
+            className="text-xs px-2 py-1.5 border rounded"
+            style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+          >
+            <option value="all">全部项目</option>
+            {data.projects.map(project => (
+              <option key={project} value={project}>{project}</option>
+            ))}
+          </select>
+
+          <input
+            type="text"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="搜索 JIRA 单号 / 标题 / 项目 / 人员"
+            className="min-w-[240px] text-xs px-2.5 py-1.5 border rounded"
+            style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+          />
+
+        </div>
+      </div>
+
+      <div className="flex-1 overflow-auto px-6 py-5" style={{ background: 'linear-gradient(180deg, #FFFDF9 0%, #FFFFFF 18%)' }}>
+        {filteredUsers.length === 0 ? (
+          <div className="text-center py-16 text-sm" style={{ color: '#9CA3AF' }}>
+            当前筛选条件下暂无 JIRA 问题单
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+            {filteredUsers.map(user => {
+              const userPanelKey = String(user.userId);
+              const isExpanded = expandedUserKey === userPanelKey;
+              return (
+                <div key={user.userId} className="rounded-2xl border overflow-hidden shadow-sm" style={{ borderColor: '#F1E3CF', backgroundColor: '#FFFFFF' }}>
+                  <button
+                    type="button"
+                    onClick={() => setExpandedUserKey(isExpanded ? null : userPanelKey)}
+                    className="w-full px-4 py-4 text-left"
+                    style={{ background: 'linear-gradient(135deg, #FFFFFF 0%, #FFF7ED 100%)' }}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px]" style={{ color: '#64748B' }}>{isExpanded ? '▼' : '▶'}</span>
+                          <span className="text-base font-bold" style={{ color: '#1F2937' }}>{user.username}</span>
+                        </div>
+                        <div className="text-xs mt-1" style={{ color: '#7C6F64' }}>
+                          当前可见 {user.filteredIssues.length} 条 · 未完成 {user.filteredOpen} · 已完成 {user.filteredDone}
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEF3C7', color: '#B45309' }}>未完成 {user.filteredOpen}</span>
+                        <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#DCFCE7', color: '#166534' }}>已完成 {user.filteredDone}</span>
+                        <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEE2E2', color: '#B91C1C' }}>高优先级 {user.filteredIssues.filter(issue => ['high', 'highest'].includes(issue.priority.toLowerCase())).length}</span>
+                      </div>
+                    </div>
+                  </button>
+
+                  {isExpanded && (
+                    <div className="px-4 py-3 space-y-2 max-h-[520px] overflow-auto border-t" style={{ borderColor: '#F5E6D3' }}>
+                      {user.filteredIssues
+                        .sort((a, b) => {
+                          if (Number(a.isDone) !== Number(b.isDone)) return Number(a.isDone) - Number(b.isDone);
+                          return (b.updated || '').localeCompare(a.updated || '');
+                        })
+                        .map(issue => {
+                          const priorityMeta = getPriorityMeta(issue.priority);
+                          const issueTypeMeta = getIssueTypeMeta(issue.issueType);
+                          return (
+                            <div
+                              key={`${user.userId}-${issue.key}`}
+                              className="rounded-xl border px-3 py-3"
+                              style={{
+                                borderColor: issue.isDone ? '#E5E7EB' : '#FED7AA',
+                                backgroundColor: issue.isDone ? '#F9FAFB' : '#FFFFFF',
+                              }}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-xs font-semibold" style={{ color: issue.isDone ? '#6B7280' : '#DC2626' }}>
+                                      【{issue.key}】
+                                    </span>
+                                    <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: issueTypeMeta.backgroundColor, color: issueTypeMeta.color }}>
+                                      {issue.issueType}
+                                    </span>
+                                    <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: issue.isDone ? '#E5E7EB' : '#FEF3C7', color: issue.isDone ? '#4B5563' : '#B45309' }}>
+                                      {issue.resolution}
+                                    </span>
+                                  </div>
+                                  <div className="text-sm font-medium mt-2 leading-6" style={{ color: issue.isDone ? '#6B7280' : '#1F2937' }}>
+                                    {issue.summary}
+                                  </div>
+                                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px]" style={{ color: '#6B7280' }}>
+                                    <span>项目：{issue.projectName}</span>
+                                    <span>状态：{issue.statusName}</span>
+                                    <span>经办：{issue.assigneeName}</span>
+                                    <span>提单：{issue.reporterName}</span>
+                                    <span>更新：{formatDateTime(issue.updated)}</span>
+                                  </div>
+                                </div>
+                                <div className="flex items-start gap-2 flex-shrink-0">
+                                  <span className="text-[11px] px-1.5 py-0.5 rounded-full" style={{ backgroundColor: priorityMeta.backgroundColor, color: priorityMeta.color }}>
+                                    {issue.priority}
+                                  </span>
+                                  <a
+                                    href={issue.link}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-[11px] px-2.5 py-1 rounded border flex-shrink-0 hover:bg-amber-50"
+                                    style={{ borderColor: '#FCD34D', color: '#B45309' }}
+                                  >
+                                    打开
+                                  </a>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -5793,6 +6384,7 @@ function GanttKanbanView({
             isHighPriorityMode={isHighPriorityMode}
             onNavigateCase={onNavigateCase}
             onNavigateTreeNode={onNavigateTreeNode}
+            allUsers={data?.allUsers?.map(user => ({ id: user.id, username: user.username, role: 'user', created_at: '' })) || []}
           />
         )}
       </div>

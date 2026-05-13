@@ -17,6 +17,9 @@ type JiraIssueApiResponse = {
     } | null;
     resolution?: { name?: string | null } | null;
     assignee?: { displayName?: string | null; name?: string | null } | null;
+    reporter?: { displayName?: string | null; name?: string | null } | null;
+    updated?: string | null;
+    project?: { name?: string | null; key?: string | null } | null;
   };
 };
 
@@ -63,6 +66,10 @@ async function fetchIssue(link: string) {
       issueType: '未知类型',
       resolution: '未完成',
       assigneeName: '未知',
+      reporterName: '未知',
+      statusName: '未知',
+      projectName: '未知项目',
+      updated: '',
       statusCategory: '未完成',
       isDone: false,
     };
@@ -86,6 +93,10 @@ async function fetchIssue(link: string) {
       issueType: '未知类型',
       resolution: '未完成',
       assigneeName: '未知',
+      reporterName: '未知',
+      statusName: '未知',
+      projectName: '未知项目',
+      updated: '',
       statusCategory: '未完成',
       isDone: false,
     };
@@ -107,6 +118,10 @@ async function fetchIssue(link: string) {
     issueType: issue.fields?.issuetype?.name?.trim() || '未知类型',
     resolution: normalized.statusLabel,
     assigneeName: issue.fields?.assignee?.displayName?.trim() || issue.fields?.assignee?.name?.trim() || '未分配',
+    reporterName: issue.fields?.reporter?.displayName?.trim() || issue.fields?.reporter?.name?.trim() || '未知',
+    statusName: issue.fields?.status?.name?.trim() || normalized.statusLabel,
+    projectName: issue.fields?.project?.name?.trim() || '未知项目',
+    updated: issue.fields?.updated || '',
     statusCategory: normalized.statusLabel,
     isDone: normalized.isDone,
   };
