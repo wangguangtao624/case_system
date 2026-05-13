@@ -182,6 +182,18 @@ interface KanbanGanttData {
   allUsers: Array<{ id: number; username: string }>;
 }
 
+interface JiraIssueSummary {
+  link: string;
+  issueKey: string;
+  summary: string;
+  priority: string;
+  issueType: string;
+  resolution: string;
+  assigneeName: string;
+  statusCategory: string;
+  isDone: boolean;
+}
+
 // ============ Main Dashboard ============
 export default function DashboardPage() {
   const router = useRouter();
@@ -4636,6 +4648,45 @@ function ProjectExecutionSummary({
   const [expandedModuleKey, setExpandedModuleKey] = useState<string | null>(null);
   const [expandedTesterJiraSectionKey, setExpandedTesterJiraSectionKey] = useState<string | null>(null);
   const [expandedTesterJiraKey, setExpandedTesterJiraKey] = useState<string | null>(null);
+  const [jiraIssueMap, setJiraIssueMap] = useState<Record<string, JiraIssueSummary>>({});
+
+  useEffect(() => {
+    const links = Array.from(new Set(
+      selectedProject.cases
+        .map(caseItem => caseItem.jiraLink?.trim())
+        .filter((link): link is string => Boolean(link))
+    ));
+
+    if (links.length === 0) {
+      setJiraIssueMap({});
+      return;
+    }
+
+    let cancelled = false;
+
+    fetch('/api/jira/issues', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ links }),
+    })
+      .then(res => res.json())
+      .then(result => {
+        if (cancelled) return;
+        const summaries = Array.isArray(result?.issues) ? result.issues as JiraIssueSummary[] : [];
+        const nextMap = summaries.reduce<Record<string, JiraIssueSummary>>((acc, issue) => {
+          acc[issue.link] = issue;
+          return acc;
+        }, {});
+        setJiraIssueMap(nextMap);
+      })
+      .catch(() => {
+        if (!cancelled) setJiraIssueMap({});
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProject.cases]);
 
   const getCompletionColor = (rate: number) => {
     if (rate >= 100) return '#16A34A';
@@ -4649,6 +4700,33 @@ function ProjectExecutionSummary({
     if (testResult === 'Fail') return { label: '失败', color: '#DC2626', backgroundColor: '#FEE2E2' };
     if (testResult === 'Block') return { label: '阻塞', color: '#D97706', backgroundColor: '#FEF3C7' };
     return { label: '未完成', color: '#64748B', backgroundColor: '#F1F5F9' };
+  };
+
+  const getJiraPriorityMeta = (priority: string) => {
+    const normalized = priority.trim().toLowerCase();
+    if (normalized === 'highest') return { label: priority, color: '#FFFFFF', backgroundColor: '#991B1B' };
+    if (normalized === 'high') return { label: priority, color: '#FFFFFF', backgroundColor: '#DC2626' };
+    if (normalized === 'medium') return { label: priority, color: '#9A3412', backgroundColor: '#FFEDD5' };
+    if (normalized === 'low') return { label: priority, color: '#1D4ED8', backgroundColor: '#DBEAFE' };
+    return { label: priority || '未知优先级', color: '#475569', backgroundColor: '#E2E8F0' };
+  };
+
+  const getJiraIssueTypeMeta = (issueType: string) => {
+    const normalized = issueType.trim().toLowerCase();
+    if (normalized.includes('故障') || normalized.includes('bug')) {
+      return { label: issueType, color: '#B91C1C', backgroundColor: '#FEE2E2' };
+    }
+    if (normalized.includes('需求') || normalized.includes('story') || normalized.includes('task')) {
+      return { label: issueType, color: '#065F46', backgroundColor: '#D1FAE5' };
+    }
+    return { label: issueType || '未知类型', color: '#4338CA', backgroundColor: '#EDE9FE' };
+  };
+
+  const getJiraResolutionMeta = (resolution: string, isDone: boolean) => {
+    if (isDone) {
+      return { label: resolution || '完成', color: '#166534', backgroundColor: '#DCFCE7' };
+    }
+    return { label: resolution || '未完成', color: '#B45309', backgroundColor: '#FEF3C7' };
   };
 
   const getModuleTooltipText = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat) => (
@@ -4858,22 +4936,78 @@ function ProjectExecutionSummary({
                                 {testerJiraGroups.map(jiraGroup => {
                                   const jiraRowKey = `${tester.userId}-${jiraGroup.link}`;
                                   const isJiraExpanded = expandedTesterJiraKey === jiraRowKey;
+                                  const jiraIssue = jiraIssueMap[jiraGroup.link];
+                                  const issueKey = jiraIssue?.issueKey || 'JIRA';
+                                  const issueSummary = jiraIssue?.summary || '正在获取 JIRA 标题...';
+                                  const issuePriority = jiraIssue?.priority || '未知优先级';
+                                  const issueType = jiraIssue?.issueType || '未知类型';
+                                  const resolution = jiraIssue?.resolution || '未解决';
+                                  const assigneeName = jiraIssue?.assigneeName || '未分配';
+                                  const issueDone = jiraIssue?.isDone || false;
+                                  const priorityMeta = getJiraPriorityMeta(issuePriority);
+                                  const issueTypeMeta = getJiraIssueTypeMeta(issueType);
+                                  const resolutionMeta = getJiraResolutionMeta(resolution, issueDone);
                                   return (
-                                    <div key={jiraRowKey} className="rounded-md border" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' }}>
+                                    <div
+                                      key={jiraRowKey}
+                                      className="rounded-md border"
+                                      style={{
+                                        borderColor: issueDone ? '#D1D5DB' : '#E5E7EB',
+                                        backgroundColor: issueDone ? '#F3F4F6' : '#FFFFFF',
+                                      }}
+                                    >
                                       <div className="flex items-start gap-2 px-3 py-2.5">
                                         <button type="button" onClick={() => setExpandedTesterJiraKey(isJiraExpanded ? null : jiraRowKey)} className="min-w-0 flex-1 text-left">
-                                          <div className="flex items-center gap-2">
+                                          <div className="flex items-center gap-x-3 gap-y-1 min-w-0 flex-wrap">
                                             <span className="text-[10px]" style={{ color: '#64748B' }}>{isJiraExpanded ? '▼' : '▶'}</span>
-                                            <span className="text-xs font-medium truncate" style={{ color: '#9A3412' }} title={jiraGroup.link}>{jiraGroup.link}</span>
+                                            <span
+                                              className="text-xs font-semibold flex-shrink-0"
+                                              style={{ color: issueDone ? '#6B7280' : '#DC2626' }}
+                                              title={issueKey}
+                                            >
+                                              【{issueKey}】
+                                            </span>
+                                            <span
+                                              className="text-[11px] px-1.5 py-0.5 rounded-full"
+                                              style={{ backgroundColor: issueTypeMeta.backgroundColor, color: issueTypeMeta.color }}
+                                              title={issueType}
+                                            >
+                                              {issueTypeMeta.label}
+                                            </span>
+                                            <span
+                                              className="text-[11px] px-1.5 py-0.5 rounded-full"
+                                              style={{ backgroundColor: resolutionMeta.backgroundColor, color: resolutionMeta.color }}
+                                            >
+                                              解决结果：{resolutionMeta.label}
+                                            </span>
+                                            <span className="text-[11px]" style={{ color: '#7C3AED' }}>当前处理人：{assigneeName}</span>
                                           </div>
-                                          <div className="text-[11px] mt-1" style={{ color: '#6B7280' }}>关联 {jiraGroup.cases.length} 条用例</div>
+                                          <div className="text-xs mt-1.5 truncate" style={{ color: issueDone ? '#6B7280' : '#1D4ED8' }} title={issueSummary}>
+                                            {issueSummary}
+                                          </div>
+                                          <div className="text-[11px] mt-1" style={{ color: '#6B7280' }}>
+                                            关联 {jiraGroup.cases.length} 条用例
+                                          </div>
                                         </button>
+                                        <span
+                                          className="text-[11px] px-1.5 py-0.5 rounded-full flex-shrink-0 self-start"
+                                          style={{ backgroundColor: priorityMeta.backgroundColor, color: priorityMeta.color }}
+                                          title={issuePriority}
+                                        >
+                                          {priorityMeta.label}
+                                        </span>
                                         <a href={jiraGroup.link} target="_blank" rel="noopener noreferrer" className="text-[11px] px-2 py-0.5 rounded border flex-shrink-0 hover:bg-amber-50" style={{ borderColor: '#FCD34D', color: '#B45309' }} onClick={(e) => e.stopPropagation()}>
                                           打开
                                         </a>
                                       </div>
                                       {isJiraExpanded && (
-                                        <div className="border-t px-3 py-2 space-y-1.5" style={{ borderColor: '#F3F4F6', backgroundColor: '#FFFBEB' }}>
+                                        <div
+                                          className="border-t px-3 py-2 space-y-1.5"
+                                          style={{
+                                            borderColor: issueDone ? '#E5E7EB' : '#F3F4F6',
+                                            backgroundColor: issueDone ? '#F9FAFB' : '#FFFBEB',
+                                          }}
+                                        >
                                           {jiraGroup.cases.map(caseItem => {
                                             const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
                                             const statusMeta = getCaseStatusMeta(caseItem.testResult);
@@ -5009,6 +5143,7 @@ function GanttKanbanView({
   const ganttContainerRef = useRef<HTMLDivElement>(null);
 
   const today = new Date();
+  const normalizedToday = new Date(today.getFullYear(), today.getMonth(), today.getDate());
   const projects = data?.projects || [];
   const summary = data?.summary || {
     projectCount: 0,
@@ -5079,9 +5214,34 @@ function GanttKanbanView({
     return () => window.clearTimeout(timer);
   }, [startDate, periodMonths, granularity, sortByStartDate, selectedProjectId, priorityMode, preferencesLoaded]);
 
-  const viewStartDate = new Date(startDate);
-  const viewEndDate = new Date(viewStartDate);
-  viewEndDate.setMonth(viewEndDate.getMonth() + periodMonths);
+  const getStartOfWeek = (date: Date) => {
+    const normalizedDate = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const day = normalizedDate.getDay();
+    const diff = day === 0 ? -6 : 1 - day;
+    normalizedDate.setDate(normalizedDate.getDate() + diff);
+    return normalizedDate;
+  };
+
+  const getEndOfWeek = (date: Date) => {
+    const end = getStartOfWeek(date);
+    end.setDate(end.getDate() + 6);
+    return end;
+  };
+
+  const selectedStartDate = new Date(startDate);
+  const selectedEndDate = new Date(selectedStartDate);
+  selectedEndDate.setMonth(selectedEndDate.getMonth() + periodMonths);
+
+  const viewStartDate = granularity === 'week'
+    ? getStartOfWeek(selectedStartDate)
+    : selectedStartDate;
+  const viewEndDate = granularity === 'week'
+    ? (() => {
+        const end = getEndOfWeek(selectedEndDate);
+        end.setDate(end.getDate() + 1);
+        return end;
+      })()
+    : selectedEndDate;
 
   const totalDays = Math.ceil((viewEndDate.getTime() - viewStartDate.getTime()) / (1000 * 60 * 60 * 24));
 
@@ -5093,12 +5253,13 @@ function GanttKanbanView({
   };
 
   const getTodayOffset = () => {
-    return (today.getTime() - viewStartDate.getTime()) / (1000 * 60 * 60 * 24);
+    return (normalizedToday.getTime() - viewStartDate.getTime()) / (1000 * 60 * 60 * 24);
   };
 
   const formatHeaderDate = (date: Date, gran: 'week' | 'month') => {
     if (gran === 'week') {
-      return `${date.getMonth() + 1}/${date.getDate()}`;
+      const weekStart = getStartOfWeek(date);
+      return `${weekStart.getMonth() + 1}/${weekStart.getDate()}`;
     } else {
       return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
     }
@@ -5137,6 +5298,14 @@ function GanttKanbanView({
   const todayOffset = getTodayOffset();
   const todayLabel = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const isHighPriorityMode = priorityMode === 'high';
+  const timelineTicks = Array.from({ length: totalDays + 1 }, (_, index) => {
+    const tickDate = new Date(viewStartDate);
+    tickDate.setDate(viewStartDate.getDate() + index);
+    return {
+      left: index * PX_PER_DAY,
+      isWeekend: tickDate.getDay() === 0 || tickDate.getDay() === 6,
+    };
+  });
 
   const parseDateOrMax = (dateStr: string | null) => {
     if (!dateStr) return Number.MAX_SAFE_INTEGER;
@@ -5180,7 +5349,7 @@ function GanttKanbanView({
     const normalized = `${anchorDate.getFullYear()}-${String(anchorDate.getMonth() + 1).padStart(2, '0')}-${String(anchorDate.getDate()).padStart(2, '0')}`;
     setStartDate(normalized);
     setPeriodMonths(9);
-    setGranularity('month');
+    setGranularity('week');
     setSortByStartDate(true);
     fetch('/api/stats/kanban/preferences', {
       method: 'PUT',
@@ -5188,7 +5357,7 @@ function GanttKanbanView({
       body: JSON.stringify({
         startDate: normalized,
         periodMonths: 9,
-        granularity: 'month',
+        granularity: 'week',
         sortByStartDate: true,
         selectedProjectId,
         priorityMode,
@@ -5354,9 +5523,17 @@ function GanttKanbanView({
       <div className="flex-1 overflow-auto px-6 py-4" ref={ganttContainerRef}>
         <div className="relative pb-8" style={{ minWidth: totalWidth + 260 }}>
           {/* Time Header Row */}
-          <div className="flex" style={{ borderBottom: '1px solid #E5E7EB' }}>
+          <div className="flex">
             <div className="flex-shrink-0" style={{ width: '260px' }}>
-              <div className="flex items-center gap-2 text-sm font-semibold px-4 py-3" style={{ color: '#374151', backgroundColor: '#F9FAFB' }}>
+              <div
+                className="flex items-center gap-2 text-sm font-semibold px-4 py-3"
+                style={{
+                  color: '#374151',
+                  backgroundColor: '#F9FAFB',
+                  minHeight: '56px',
+                  borderBottom: '1px solid #111827',
+                }}
+              >
                 <span>项目名称</span>
                 {isHighPriorityMode && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
@@ -5365,22 +5542,79 @@ function GanttKanbanView({
                 )}
               </div>
             </div>
-            <div className="flex-1 flex" style={{ position: 'relative' }}>
+            <div
+              className="flex-shrink-0 flex"
+              style={{
+                position: 'relative',
+                width: `${totalWidth}px`,
+                height: '56px',
+              }}
+            >
               {timeHeaders.map((h, i) => (
                 <div
                   key={i}
-                  className="text-center text-xs px-1 py-2 border-l flex-shrink-0"
+                  className="border-l flex-shrink-0"
                   style={{
                     width: `${h.width * PX_PER_DAY}px`,
                     borderColor: '#E5E7EB',
-                    color: '#6B7280',
                     backgroundColor: '#F9FAFB',
-                    fontSize: '10px',
-                    overflow: 'hidden',
-                    whiteSpace: 'nowrap',
+                    overflow: 'visible',
+                    position: 'relative',
+                    height: '56px',
                   }}
                 >
-                  {h.label}
+                  {granularity === 'week' ? (
+                    <div
+                      className="absolute text-xs"
+                      style={{
+                        left: '0',
+                        top: '4px',
+                        color: '#6B7280',
+                        fontSize: '10px',
+                        whiteSpace: 'nowrap',
+                        transform: 'translateX(-45%)',
+                        zIndex: 2,
+                      }}
+                    >
+                      {h.label}
+                    </div>
+                  ) : (
+                    <div
+                      className="text-center text-xs px-1 pt-2"
+                      style={{
+                        color: '#6B7280',
+                        fontSize: '10px',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {h.label}
+                    </div>
+                  )}
+                  <div
+                    className="absolute left-0 right-0 bottom-0"
+                    style={{
+                      height: granularity === 'week' ? '19px' : '1px',
+                      borderBottom: '1px solid #111827',
+                    }}
+                  >
+                    {granularity === 'week' && Array.from({ length: h.width }, (_, tickIndex) => {
+                      const tickDate = new Date(h.date);
+                      tickDate.setDate(h.date.getDate() + tickIndex);
+                      const isWeekend = tickDate.getDay() === 0 || tickDate.getDay() === 6;
+                      return (
+                        <div
+                          key={tickIndex}
+                          className="absolute bottom-0"
+                          style={{
+                            left: `${tickIndex * PX_PER_DAY}px`,
+                            width: '1px',
+                            height: tickIndex === 0 ? '17px' : '12px',
+                            backgroundColor: isWeekend ? '#DC2626' : '#16A34A',
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
                 </div>
               ))}
             </div>
@@ -5392,7 +5626,7 @@ function GanttKanbanView({
                 className="absolute pointer-events-none"
                 style={{
                   left: `${260 + (todayOffset * PX_PER_DAY)}px`,
-                  top: '41px',
+                  top: '56px',
                   bottom: '28px',
                   width: '2px',
                   backgroundColor: '#EF4444',
@@ -5472,8 +5706,11 @@ function GanttKanbanView({
 
                 {/* Gantt Bar Area */}
                 <div
-                  className="flex-1 relative"
-                  style={{ position: 'relative' }}
+                  className="flex-shrink-0 relative"
+                  style={{
+                    position: 'relative',
+                    width: `${totalWidth}px`,
+                  }}
                   onMouseEnter={(e) => {
                     setHoveredProject(project.id);
                     setTooltipPos({ x: e.clientX + 12, y: e.clientY + 12 });
@@ -5485,13 +5722,13 @@ function GanttKanbanView({
                   onClick={() => setSelectedProjectId(project.id)}
                 >
                   {/* Grid lines */}
-                  {timeHeaders.map((h, i) => (
+                  {timelineTicks.map((tick, i) => (
                     <div
                       key={i}
                       className="absolute top-0 bottom-0 border-l"
                       style={{
-                        left: `${h.width * PX_PER_DAY * timeHeaders.slice(0, i).reduce((s, hh) => s + hh.width, 0) / totalWidthUnits * 100}%`,
-                        borderColor: '#F3F4F6',
+                        left: `${tick.left}px`,
+                        borderColor: tick.isWeekend && granularity === 'week' ? '#DCFCE7' : '#F3F4F6',
                       }}
                     />
                   ))}
@@ -5501,8 +5738,8 @@ function GanttKanbanView({
                     <div
                       className="absolute rounded"
                       style={{
-                        left: `${(barLeft / totalWidth) * 100}%`,
-                        width: `${(barWidth / totalWidth) * 100}%`,
+                        left: `${barLeft}px`,
+                        width: `${barWidth}px`,
                         top: '14px',
                         height: '34px',
                         backgroundColor: '#E6F2FF',
