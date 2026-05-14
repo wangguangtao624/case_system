@@ -159,7 +159,17 @@ export async function GET(request: NextRequest) {
         type: 'project',
         dbId: project.id,
         name: project.name,
-        children: moduleNodes,
+        children: [
+          {
+            id: `project-space-${project.id}`,
+            type: 'project-space',
+            dbId: project.id,
+            name: '项目空间',
+            projectId: project.id,
+            isArchived: !!(project as Record<string, unknown>).is_archived,
+          },
+          ...moduleNodes,
+        ],
         testerId: projectTester?.userId,
         testerName: projectTester?.testerName,
         resolvedTesterNames: projectAllTesterNames.length > 0 ? projectAllTesterNames.join('、') : undefined,
@@ -180,7 +190,7 @@ export async function GET(request: NextRequest) {
 
 interface TreeNode {
   id: string;
-  type: 'project' | 'module' | 'case';
+  type: 'project' | 'project-space' | 'module' | 'case';
   dbId: number;
   name: string;
   caseNo?: string;

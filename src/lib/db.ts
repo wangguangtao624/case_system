@@ -75,6 +75,20 @@ function initializeDatabase(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now', 'localtime'))
     );
 
+    CREATE TABLE IF NOT EXISTS project_space_files (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      space_type TEXT NOT NULL DEFAULT 'public',
+      owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      owner_username TEXT DEFAULT '',
+      filename TEXT NOT NULL,
+      original_name TEXT NOT NULL,
+      file_size INTEGER DEFAULT 0,
+      file_type TEXT DEFAULT '',
+      storage_path TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT
@@ -90,6 +104,11 @@ function initializeDatabase(db: Database.Database) {
   try {
     db.exec(`ALTER TABLE files ADD COLUMN source TEXT DEFAULT 'upload'`);
   } catch { /* column already exists */ }
+
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_project_space_files_project_created ON project_space_files(project_id, created_at DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_project_space_files_owner_created ON project_space_files(project_id, owner_user_id, created_at DESC)`);
+  } catch { /* ignore index errors */ }
 
   // Migration: add is_public column to projects table
   try {

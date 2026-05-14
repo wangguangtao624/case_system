@@ -25,7 +25,7 @@ interface UserInfo {
 
 interface TreeNode {
   id: string;
-  type: 'project' | 'module' | 'case';
+  type: 'project' | 'project-space' | 'module' | 'case';
   dbId: number;
   name: string;
   caseNo?: string;
@@ -76,6 +76,33 @@ interface FileData {
   file_type: string;
   created_at: string;
   source?: string;
+}
+
+interface ProjectSpaceFileData {
+  id: number;
+  project_id: number;
+  space_type: 'public' | 'personal';
+  owner_user_id: number | null;
+  owner_username: string;
+  filename: string;
+  original_name: string;
+  file_size: number;
+  file_type: string;
+  created_at: string;
+}
+
+interface ProjectSpaceSummary {
+  project: {
+    id: number;
+    name: string;
+    isArchived: boolean;
+  };
+  publicFiles: ProjectSpaceFileData[];
+  personalSpaces: Array<{
+    userId: number | null;
+    username: string;
+    files: ProjectSpaceFileData[];
+  }>;
 }
 
 interface UserItem {
@@ -273,6 +300,7 @@ export default function DashboardPage() {
   const [selectedProjectOverview, setSelectedProjectOverview] = useState<KanbanProjectStat | null>(null);
   const [selectedProjectOverviewLoading, setSelectedProjectOverviewLoading] = useState(false);
   const [selectedProjectOverviewMode, setSelectedProjectOverviewMode] = useState<KanbanPriorityMode>('all');
+  const [selectedProjectSpace, setSelectedProjectSpace] = useState<{ projectId: number; projectName: string } | null>(null);
   // Bug Report
   const [showBugReport, setShowBugReport] = useState(false);
   const [showBugPanel, setShowBugPanel] = useState(false);
@@ -285,7 +313,7 @@ export default function DashboardPage() {
   const [showUserMgmt, setShowUserMgmt] = useState(false);
   const [showChangePwd, setShowChangePwd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showPreview, setShowPreview] = useState<{ fileId: number; content: string; filename: string; truncated: boolean; isImage?: boolean } | null>(null);
+  const [showPreview, setShowPreview] = useState<{ fileId: number; content: string; filename: string; truncated: boolean; isImage?: boolean; downloadUrl?: string; previewUrl?: string } | null>(null);
   const [statsPreview, setStatsPreview] = useState<{ level: 'project' | 'module'; id: number; name: string } | null>(null);
 
   const loadTree = useCallback(async (filterTesterId?: string, archiveFilter?: string) => {
@@ -328,6 +356,7 @@ export default function DashboardPage() {
     setShowJiraBoard(false);
     setKanbanData(null);
     setSelectedCase(null);
+    setSelectedProjectSpace(null);
     setSelectedProjectOverviewLoading(true);
     setSelectedProjectOverviewMode(priorityMode);
     try {
@@ -435,6 +464,7 @@ export default function DashboardPage() {
     setShowJiraBoard(false);
     setKanbanData(null);
     setSelectedProjectOverview(null);
+    setSelectedProjectSpace(null);
     setSelectedNodeId(node.id);
     try {
       const res = await fetch(`/api/cases/${node.dbId}?_t=${Date.now()}`);
@@ -510,6 +540,7 @@ export default function DashboardPage() {
     setShowJiraBoard(false);
     setKanbanData(null);
     setSelectedCase(null);
+    setSelectedProjectSpace(null);
     let path = findNodePathByDbId(tree, type, dbId);
     if (!path) {
       setTesterFilter('');
@@ -528,6 +559,7 @@ export default function DashboardPage() {
     setShowKanban(false);
     setShowJiraBoard(false);
     setKanbanData(null);
+    setSelectedProjectSpace(null);
     const matchedPath = findNodePathByDbId(tree, 'case', caseId);
     const matchedNode = matchedPath?.[matchedPath.length - 1] || findCaseNodeByDbId(tree, caseId);
     if (matchedPath) {
@@ -573,6 +605,8 @@ export default function DashboardPage() {
     setTesterFilter(value);
     setSelectedCase(null);
     setSelectedNodeId(null);
+    setSelectedProjectOverview(null);
+    setSelectedProjectSpace(null);
     const filterId = value === 'my' && user ? String(user.id) : value;
     loadTree(filterId || '', projectFilter);
   };
@@ -581,9 +615,22 @@ export default function DashboardPage() {
     setProjectFilter(value);
     setSelectedCase(null);
     setSelectedNodeId(null);
+    setSelectedProjectOverview(null);
+    setSelectedProjectSpace(null);
     const filterId = testerFilter === 'my' && user ? String(user.id) : testerFilter;
     loadTree(filterId || '', value);
   };
+
+  const handleSelectProjectSpace = useCallback((projectId: number, projectName: string) => {
+    setShowKanban(false);
+    setShowJiraBoard(false);
+    setKanbanData(null);
+    setSelectedCase(null);
+    setSelectedProjectOverview(null);
+    setSelectedProjectOverviewLoading(false);
+    setSelectedProjectSpace({ projectId, projectName });
+    setSelectedNodeId(`project-space-${projectId}`);
+  }, []);
 
   const handleArchive = async () => {
     if (!archiveDialog) return;
@@ -745,6 +792,7 @@ export default function DashboardPage() {
                 setSelectedNodeId(`project-${projectId}`);
                 fetchProjectOverview(projectId);
               }}
+              onSelectProjectSpace={handleSelectProjectSpace}
               onTreeChange={() => loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter)}
               onToggleSidebar={() => setSidebarCollapsed(true)}
               onPreview={(level, id, name) => setStatsPreview({ level, id, name })}
@@ -758,6 +806,7 @@ export default function DashboardPage() {
               onOpenKanban={() => {
                 setSelectedCase(null);
                 setSelectedProjectOverview(null);
+                setSelectedProjectSpace(null);
                 setSelectedNodeId(null);
                 setShowJiraBoard(false);
                 setShowKanban(true);
@@ -766,6 +815,7 @@ export default function DashboardPage() {
               onOpenJiraBoard={() => {
                 setSelectedCase(null);
                 setSelectedProjectOverview(null);
+                setSelectedProjectSpace(null);
                 setSelectedNodeId(null);
                 setShowKanban(false);
                 setKanbanData(null);
@@ -837,6 +887,16 @@ export default function DashboardPage() {
               onNavigateCase={handleOpenCaseById}
               onNavigateTreeNode={handleNavigateTreeNode}
               onRefresh={() => fetchKanbanData(kanbanPriorityMode)}
+            />
+          ) : selectedProjectSpace ? (
+            <ProjectSpaceView
+              projectId={selectedProjectSpace.projectId}
+              projectName={selectedProjectSpace.projectName}
+              currentUser={user}
+              onPreviewFile={(fileId, content, filename, truncated, urls) => {
+                const isImage = !content;
+                setShowPreview({ fileId, content, filename, truncated, isImage, ...urls });
+              }}
             />
           ) : selectedCase ? (
             <CaseDetail
@@ -945,6 +1005,8 @@ export default function DashboardPage() {
           truncated={showPreview.truncated}
           fileId={showPreview.fileId}
           isImage={showPreview.isImage}
+          downloadUrl={showPreview.downloadUrl}
+          previewUrl={showPreview.previewUrl}
           onClose={() => setShowPreview(null)}
         />
       )}
@@ -1140,6 +1202,7 @@ function SidebarTree({
   selectedNodeId,
   onSelectCase,
   onSelectProject,
+  onSelectProjectSpace,
   onTreeChange,
   onToggleSidebar,
   onPreview,
@@ -1162,6 +1225,7 @@ function SidebarTree({
   selectedNodeId: string | null;
   onSelectCase: (node: TreeNode) => void;
   onSelectProject: (projectId: number) => void;
+  onSelectProjectSpace: (projectId: number, projectName: string) => void;
   onTreeChange: () => void;
   onToggleSidebar: () => void;
   onPreview: (level: 'project' | 'module', id: number, name: string) => void;
@@ -1445,6 +1509,10 @@ function SidebarTree({
           onClick={() => {
             if (hasChildren || node.type !== 'case') toggleExpand(node.id);
             if (node.type === 'project') onSelectProject(node.dbId);
+            if (node.type === 'project-space') {
+              const parentProjectName = tree.find(projectNode => projectNode.dbId === (node.projectId || node.dbId) && projectNode.type === 'project')?.name || '项目';
+              onSelectProjectSpace(node.dbId, parentProjectName);
+            }
             if (node.type === 'case') onSelectCase(node);
           }}
           onContextMenu={(e) => handleContextMenu(e, node)}
@@ -1489,6 +1557,11 @@ function SidebarTree({
           ) : (
             <span className="min-w-0 flex-1">
               <span className="flex items-center gap-1 min-w-0">
+                {node.type === 'project-space' && (
+                  <span className="flex items-center justify-center w-4 h-4 rounded-sm flex-shrink-0" style={{ backgroundColor: '#FFF7ED' }}>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2"><path d="M3 7h5l2 2h11v10a2 2 0 0 1-2 2H3z" /><path d="M3 7V5a2 2 0 0 1 2-2h3l2 2h4" /></svg>
+                  </span>
+                )}
                 <span className="truncate">{node.name}</span>
                 {node.isArchived && (
                   <span className="text-xs px-1 rounded flex-shrink-0" style={{ color: '#92400E', backgroundColor: '#FEF3C7', fontSize: '10px' }}>已归档</span>
@@ -1509,7 +1582,7 @@ function SidebarTree({
           )}
 
           {/* Action buttons on hover - managers only */}
-          {!isEditing && isManager && (
+          {!isEditing && isManager && node.type !== 'project-space' && (
             <span className="hidden group-hover:flex items-center gap-0.5 ml-1 flex-shrink-0">
               {/* Assign tester icon - all levels */}
               <button
@@ -1548,7 +1621,7 @@ function SidebarTree({
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#0073E6" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
                 </button>
               )}
-              {node.type !== 'case' && (
+              {(node.type === 'project' || node.type === 'module') && (
                 <button
                   className="p-0.5 rounded hover:bg-gray-200"
                   title="添加子节点"
@@ -1824,7 +1897,7 @@ function SidebarTree({
               </button>
             )}
             {/* Assign tester option - managers only */}
-            {isManager && (
+            {isManager && contextMenu.node.type !== 'project-space' && (
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100"
                 style={{ color: '#8B5CF6' }}
@@ -1833,7 +1906,7 @@ function SidebarTree({
                 {contextMenu.node.testerName ? `重新分配 (${contextMenu.node.testerName})` : '分配测试者'}
               </button>
             )}
-            {isManager && contextMenu.node.testerName && (
+            {isManager && contextMenu.node.type !== 'project-space' && contextMenu.node.testerName && (
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-red-50"
                 style={{ color: '#EF4444' }}
@@ -1842,7 +1915,7 @@ function SidebarTree({
                 取消分配
               </button>
             )}
-            {isManager && (
+            {isManager && contextMenu.node.type !== 'project-space' && (
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100"
                 style={{ color: '#333' }}
@@ -1854,7 +1927,7 @@ function SidebarTree({
                 重命名
               </button>
             )}
-            {isManager && (
+            {isManager && contextMenu.node.type !== 'project-space' && (
               <button
                 className="w-full text-left px-3 py-1.5 text-sm hover:bg-red-50"
                 style={{ color: '#EF4444' }}
@@ -1862,6 +1935,11 @@ function SidebarTree({
               >
                 删除
               </button>
+            )}
+            {isManager && contextMenu.node.type === 'project-space' && (
+              <div className="px-3 py-2 text-xs" style={{ color: '#999' }}>
+                项目空间为系统节点，无需额外操作
+              </div>
             )}
             {!isManager && (
               <div className="px-3 py-2 text-xs" style={{ color: '#999' }}>
@@ -3328,6 +3406,8 @@ function FilePreviewDialog({
   truncated,
   fileId,
   isImage,
+  downloadUrl,
+  previewUrl,
   onClose,
 }: {
   content: string;
@@ -3335,8 +3415,12 @@ function FilePreviewDialog({
   truncated: boolean;
   fileId: number;
   isImage?: boolean;
+  downloadUrl?: string;
+  previewUrl?: string;
   onClose: () => void;
 }) {
+  const resolvedDownloadUrl = downloadUrl || `/api/files/${fileId}`;
+  const resolvedPreviewUrl = previewUrl || `/api/files/preview/${fileId}`;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }} onClick={onClose}>
       <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl mx-4" style={{ maxHeight: '85vh' }} onClick={(e) => e.stopPropagation()}>
@@ -3344,7 +3428,7 @@ function FilePreviewDialog({
           <h2 className="font-bold text-sm" style={{ color: '#333' }}>预览：{filename}</h2>
           <div className="flex items-center gap-2">
             <a
-              href={`/api/files/${fileId}`}
+              href={resolvedDownloadUrl}
               className="px-2 py-0.5 text-xs rounded hover:bg-gray-100"
               style={{ color: '#0073E6' }}
             >
@@ -3359,7 +3443,7 @@ function FilePreviewDialog({
           {isImage ? (
             <div className="flex items-center justify-center">
               <img
-                src={`/api/files/preview/${fileId}`}
+                src={resolvedPreviewUrl}
                 alt={filename}
                 style={{ maxWidth: '100%', maxHeight: '65vh', objectFit: 'contain' }}
               />
@@ -3376,6 +3460,700 @@ function FilePreviewDialog({
           )}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ProjectSpaceView({
+  projectId,
+  projectName,
+  currentUser,
+  onPreviewFile,
+}: {
+  projectId: number;
+  projectName: string;
+  currentUser: UserInfo;
+  onPreviewFile: (
+    fileId: number,
+    content: string,
+    filename: string,
+    truncated: boolean,
+    urls: { downloadUrl: string; previewUrl: string }
+  ) => void;
+}) {
+  const [data, setData] = useState<ProjectSpaceSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ active: boolean; percent: number; label: string }>({ active: false, percent: 0, label: '' });
+  const [dragOver, setDragOver] = useState(false);
+  const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [pendingUpload, setPendingUpload] = useState<{ files: File[]; folderName?: string; filePaths?: Record<number, string> } | null>(null);
+  const [renamingFile, setRenamingFile] = useState<{ id: number; name: string } | null>(null);
+  const [deletingFileId, setDeletingFileId] = useState<number | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
+  const dragCounterRef = useRef(0);
+
+  const loadProjectSpace = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/project-space/${projectId}`);
+      const result = await res.json();
+      setData(result);
+    } catch (error) {
+      console.error('Load project space error:', error);
+      setData(null);
+    } finally {
+      setLoading(false);
+    }
+  }, [projectId]);
+
+  useEffect(() => {
+    loadProjectSpace();
+  }, [loadProjectSpace]);
+
+  useEffect(() => {
+    const input = folderInputRef.current;
+    if (!input) return;
+    input.setAttribute('webkitdirectory', '');
+    input.setAttribute('directory', '');
+  }, []);
+
+  const readAllDirectoryEntries = async (dirEntry: FileSystemDirectoryEntry, basePath: string): Promise<{ files: File[]; paths: Record<number, string> }> => {
+    const results: File[] = [];
+    const paths: Record<number, string> = {};
+    const entries = await new Promise<FileSystemEntry[]>((resolve, reject) => {
+      const reader = dirEntry.createReader();
+      const allEntries: FileSystemEntry[] = [];
+      const readBatch = () => {
+        reader.readEntries((batch) => {
+          if (batch.length === 0) resolve(allEntries);
+          else {
+            allEntries.push(...batch);
+            readBatch();
+          }
+        }, reject);
+      };
+      readBatch();
+    });
+
+    for (const entry of entries) {
+      const entryPath = basePath ? `${basePath}/${entry.name}` : entry.name;
+      if (entry.isFile) {
+        const fileEntry = entry as FileSystemFileEntry;
+        const file = await new Promise<File>((resolve, reject) => {
+          fileEntry.file(resolve, reject);
+        });
+        paths[results.length] = entryPath;
+        results.push(file);
+      } else if (entry.isDirectory) {
+        const nested = await readAllDirectoryEntries(entry as FileSystemDirectoryEntry, entryPath);
+        for (const [index, nestedPath] of Object.entries(nested.paths)) {
+          paths[results.length + Number(index)] = nestedPath;
+        }
+        results.push(...nested.files);
+      }
+    }
+
+    return { files: results, paths };
+  };
+
+  const handleFileUpload = async (
+    fileList: FileList | File[],
+    targetSpace: 'public' | 'personal',
+    folderName?: string,
+    filePaths?: Record<number, string>
+  ) => {
+    if (!fileList.length) return;
+    setUploading(true);
+    setUploadProgress({ active: true, percent: 0, label: `上传中 (0/${fileList.length})...` });
+    try {
+      const formData = new FormData();
+      formData.append('projectId', String(projectId));
+      formData.append('targetSpace', targetSpace);
+      for (let i = 0; i < fileList.length; i += 1) {
+        formData.append('files', fileList[i]);
+      }
+      if (folderName) formData.append('folderName', folderName);
+      if (filePaths && Object.keys(filePaths).length > 0) {
+        formData.append('filePaths', JSON.stringify(filePaths));
+      }
+
+      await new Promise<void>((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.upload.addEventListener('progress', (event) => {
+          if (event.lengthComputable) {
+            const percent = Math.round((event.loaded / event.total) * 100);
+            setUploadProgress({ active: true, percent, label: `上传中 (${percent}%)...` });
+          }
+        });
+        xhr.addEventListener('load', () => {
+          try {
+            const result = JSON.parse(xhr.responseText);
+            if (result.success) {
+              setMessage({ type: 'success', text: targetSpace === 'public' ? '公共文件上传成功' : '个人空间文件上传成功' });
+              loadProjectSpace();
+              resolve();
+            } else {
+              setMessage({ type: 'error', text: result.error || '上传失败' });
+              reject(new Error(result.error || 'upload failed'));
+            }
+          } catch (error) {
+            reject(error);
+          }
+        });
+        xhr.addEventListener('error', () => reject(new Error('network error')));
+        xhr.open('POST', '/api/project-space/upload');
+        xhr.send(formData);
+      });
+    } catch (error) {
+      console.error('Upload project space file error:', error);
+      setMessage({ type: 'error', text: '上传失败，请稍后重试' });
+    } finally {
+      setUploading(false);
+      setUploadProgress({ active: false, percent: 0, label: '' });
+      setPendingUpload(null);
+      window.setTimeout(() => setMessage(null), 1200);
+    }
+  };
+
+  const prepareUpload = (files: File[] | FileList, folderName?: string, filePaths?: Record<number, string>) => {
+    const normalizedFiles = Array.isArray(files) ? files : Array.from(files);
+    if (normalizedFiles.length === 0) return;
+    setPendingUpload({ files: normalizedFiles, folderName, filePaths });
+  };
+
+  const handleDrop = async (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragOver(false);
+    dragCounterRef.current = 0;
+    if (uploading || pendingUpload) return;
+
+    const items = e.dataTransfer.items;
+    if (!items || items.length === 0) {
+      if (e.dataTransfer.files.length > 0) prepareUpload(e.dataTransfer.files);
+      return;
+    }
+
+    const allFiles: File[] = [];
+    const allPaths: Record<number, string> = {};
+    let hasDirectory = false;
+    let folderName = '';
+
+    for (let i = 0; i < items.length; i += 1) {
+      const entry = items[i].webkitGetAsEntry?.();
+      if (entry?.isDirectory) {
+        hasDirectory = true;
+        folderName = folderName || entry.name;
+        const nested = await readAllDirectoryEntries(entry as FileSystemDirectoryEntry, entry.name);
+        for (const [index, relativePath] of Object.entries(nested.paths)) {
+          allPaths[allFiles.length + Number(index)] = relativePath;
+        }
+        allFiles.push(...nested.files);
+      } else if (entry?.isFile) {
+        const file = e.dataTransfer.files[i];
+        if (file) allFiles.push(file);
+      }
+    }
+
+    if (allFiles.length > 0) {
+      prepareUpload(allFiles, hasDirectory ? folderName : undefined, hasDirectory ? allPaths : undefined);
+    } else if (!hasDirectory && e.dataTransfer.files.length > 0) {
+      prepareUpload(e.dataTransfer.files);
+    }
+  };
+
+  const handlePreview = async (file: ProjectSpaceFileData) => {
+    const ext = file.file_type.toLowerCase();
+    const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'].includes(ext);
+    const downloadUrl = `/api/project-space/files/${file.id}`;
+    const previewUrl = `/api/project-space/files/preview/${file.id}`;
+    if (isImage) {
+      onPreviewFile(file.id, '', file.original_name, false, { downloadUrl, previewUrl });
+      return;
+    }
+    try {
+      const res = await fetch(previewUrl);
+      const result = await res.json();
+      if (result.content !== undefined) {
+        onPreviewFile(file.id, result.content, result.filename, result.truncated, { downloadUrl, previewUrl });
+      } else {
+        setMessage({ type: 'error', text: result.error || '预览失败' });
+        window.setTimeout(() => setMessage(null), 1200);
+      }
+    } catch (error) {
+      console.error('Preview project space file error:', error);
+      setMessage({ type: 'error', text: '预览失败' });
+      window.setTimeout(() => setMessage(null), 1200);
+    }
+  };
+
+  const formatFileSize = (bytes: number) => {
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const formatDateTime = (value: string) => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  };
+
+  const canPreviewFile = (ext: string) => {
+    const normalized = ext.toLowerCase();
+    return ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.txt', '.log', '.csv', '.json', '.xml', '.yaml', '.yml', '.md', '.ini', '.conf', '.cfg', '.properties'].includes(normalized);
+  };
+
+  const getProjectSpaceFileIcon = (ext: string) => {
+    const normalized = ext.toLowerCase();
+    if (['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'].includes(normalized)) {
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2" className="flex-shrink-0">
+          <rect x="3" y="3" width="18" height="18" rx="2" />
+          <circle cx="8.5" cy="8.5" r="1.5" />
+          <path d="M21 15l-5-5L5 21" />
+        </svg>
+      );
+    }
+    if (['.xlsx', '.xls', '.csv'].includes(normalized)) {
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#16A34A" strokeWidth="2" className="flex-shrink-0">
+          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+          <polyline points="14 2 14 8 20 8" />
+          <path d="M9 17l6-6" />
+          <path d="M15 17l-6-6" />
+        </svg>
+      );
+    }
+    if (['.zip', '.rar', '.7z', '.tar', '.gz'].includes(normalized)) {
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2" className="flex-shrink-0">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+          <path d="M12 8v8" />
+          <path d="M10 10h4" />
+          <path d="M10 14h4" />
+        </svg>
+      );
+    }
+    if (['.txt', '.log', '.md', '.json', '.xml', '.yaml', '.yml', '.ini', '.conf', '.cfg', '.properties'].includes(normalized)) {
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2" className="flex-shrink-0">
+          <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+          <polyline points="14 2 14 8 20 8" />
+          <line x1="8" y1="13" x2="16" y2="13" />
+          <line x1="8" y1="17" x2="13" y2="17" />
+        </svg>
+      );
+    }
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="2" className="flex-shrink-0">
+        <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+    );
+  };
+
+  const handleRenameFile = async (fileId: number, newName: string) => {
+    const trimmedName = newName.trim();
+    if (!trimmedName) {
+      setRenamingFile(null);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/project-space/files/${fileId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ originalName: trimmedName }),
+      });
+      const result = await res.json();
+      if (result.success) {
+        setMessage({ type: 'success', text: '文件名已更新' });
+        loadProjectSpace();
+      } else {
+        setMessage({ type: 'error', text: result.error || '重命名失败' });
+      }
+    } catch (error) {
+      console.error('Rename project space file error:', error);
+      setMessage({ type: 'error', text: '重命名失败，请稍后重试' });
+    } finally {
+      setRenamingFile(null);
+      window.setTimeout(() => setMessage(null), 1200);
+    }
+  };
+
+  const handleDeleteFile = async (fileId: number) => {
+    if (!window.confirm('确定要删除这个文件吗？')) return;
+    setDeletingFileId(fileId);
+    try {
+      const res = await fetch(`/api/project-space/files/${fileId}`, { method: 'DELETE' });
+      const result = await res.json();
+      if (result.success) {
+        setMessage({ type: 'success', text: '文件已删除' });
+        loadProjectSpace();
+      } else {
+        setMessage({ type: 'error', text: result.error || '删除失败' });
+      }
+    } catch (error) {
+      console.error('Delete project space file error:', error);
+      setMessage({ type: 'error', text: '删除失败，请稍后重试' });
+    } finally {
+      setDeletingFileId(null);
+      window.setTimeout(() => setMessage(null), 1200);
+    }
+  };
+
+  const renderFileRow = (file: ProjectSpaceFileData) => (
+    <div
+      key={file.id}
+      className="flex items-center justify-between px-3 py-1.5 border rounded group cursor-pointer transition-all duration-150"
+      style={{ borderColor: '#E5E7EB' }}
+      onMouseEnter={(e) => { e.currentTarget.style.borderColor = '#0073E6'; e.currentTarget.style.backgroundColor = '#F0F7FF'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.borderColor = '#E5E7EB'; e.currentTarget.style.backgroundColor = ''; }}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 min-w-0">
+          {getProjectSpaceFileIcon(file.file_type)}
+          <div className="min-w-0 flex-1">
+            {renamingFile?.id === file.id ? (
+              <input
+                autoFocus
+                className="text-xs px-1 border rounded w-full"
+                style={{ borderColor: '#0073E6', color: '#1F2937', outline: 'none', minWidth: '0' }}
+                value={renamingFile.name}
+                onChange={(e) => setRenamingFile({ ...renamingFile, name: e.target.value })}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleRenameFile(file.id, renamingFile.name);
+                  if (e.key === 'Escape') setRenamingFile(null);
+                }}
+                onBlur={() => handleRenameFile(file.id, renamingFile.name)}
+              />
+            ) : (
+              <span className="text-xs truncate hover:underline" style={{ color: '#0073E6' }} title={file.original_name}>
+                {file.original_name}
+              </span>
+            )}
+            <div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] mt-0.5" style={{ color: '#9CA3AF' }}>
+              <span>{formatFileSize(file.file_size)}</span>
+              <span>{(file.file_type || '未知类型').toUpperCase()}</span>
+              <span>{formatDateTime(file.created_at)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
+        {canPreviewFile(file.file_type) && (
+          <button
+            type="button"
+            onClick={() => handlePreview(file)}
+            className="p-1 rounded hover:bg-gray-100"
+            title="预览"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+          </button>
+        )}
+        <a
+          href={`/api/project-space/files/${file.id}`}
+          className="p-1 rounded hover:bg-gray-100"
+          title="下载"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+        </a>
+        <button
+          type="button"
+          onClick={() => setRenamingFile({ id: file.id, name: file.original_name })}
+          className="p-1 rounded hover:bg-gray-100"
+          title="重命名"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
+        </button>
+        <button
+          type="button"
+          disabled={deletingFileId === file.id}
+          onClick={() => handleDeleteFile(file.id)}
+          className="p-1 rounded hover:bg-red-50 disabled:opacity-50"
+          title="删除"
+        >
+          {deletingFileId === file.id ? (
+            <svg className="animate-spin" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2"><path d="M12 2a10 10 0 0 1 10 10" /></svg>
+          ) : (
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="2"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+          )}
+        </button>
+      </div>
+    </div>
+  );
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-full" style={{ color: '#999' }}>
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 mx-auto mb-4" style={{ borderColor: '#D97706' }}></div>
+          <p className="text-sm">加载项目空间中...</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="p-5 relative"
+      onDragEnter={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounterRef.current += 1;
+        if (e.dataTransfer.types.includes('Files')) setDragOver(true);
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dragCounterRef.current -= 1;
+        if (dragCounterRef.current <= 0) {
+          dragCounterRef.current = 0;
+          setDragOver(false);
+        }
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+      }}
+      onDrop={handleDrop}
+    >
+      {dragOver && (
+        <div
+          className="fixed inset-0 z-40 pointer-events-none"
+          style={{ backgroundColor: 'rgba(0, 115, 230, 0.08)' }}
+        >
+          <div
+            className="absolute inset-4 rounded-2xl border-2 border-dashed"
+            style={{ borderColor: '#0073E6', boxShadow: 'inset 0 0 0 1px rgba(0,115,230,0.08)' }}
+          />
+          <div className="absolute inset-0 flex items-center justify-center">
+            <div className="px-5 py-3 rounded-xl shadow-lg text-sm font-semibold" style={{ backgroundColor: '#FFFFFF', color: '#0073E6', border: '1px solid #B3D9FF' }}>
+              松开即可上传到项目空间
+            </div>
+          </div>
+        </div>
+      )}
+      <div className="rounded-2xl border overflow-hidden shadow-sm" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' }}>
+        <div className="px-5 py-4 border-b" style={{ borderColor: '#E5E7EB', background: 'linear-gradient(135deg, #FFF8F1 0%, #FFFFFF 50%, #F8FAFC 100%)' }}>
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-[320px] flex-1">
+              <div className="flex items-center gap-2">
+                <div className="flex items-center justify-center w-9 h-9 rounded-xl" style={{ backgroundColor: '#FFF7ED' }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2"><path d="M3 7h5l2 2h11v10a2 2 0 0 1-2 2H3z" /><path d="M3 7V5a2 2 0 0 1 2-2h3l2 2h4" /></svg>
+                </div>
+                    <div>
+                      <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>{projectName} · 项目空间</h3>
+                      <p className="text-xs mt-1" style={{ color: '#6B7280' }}>
+                    公共文件长期展示，个人空间按实际上传情况自动归档展示，所有成员均可下载；在线文档支持预览、重命名和删除。
+                      </p>
+                    </div>
+                  </div>
+                </div>
+            <div className="flex items-center gap-2">
+              <label
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs cursor-pointer transition-colors"
+                style={{ backgroundColor: '#0073E6', color: '#FFF' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="17 8 12 3 7 8" /><line x1="12" y1="3" x2="12" y2="15" /></svg>
+                上传文件
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files && e.target.files.length > 0) prepareUpload(e.target.files);
+                    e.target.value = '';
+                  }}
+                  disabled={uploading}
+                />
+              </label>
+              <label
+                className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-xs cursor-pointer transition-colors"
+                style={{ backgroundColor: '#D97706', color: '#FFF' }}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 7h5l2 2h11v10a2 2 0 0 1-2 2H3z" /><path d="M3 7V5a2 2 0 0 1 2-2h3l2 2h4" /></svg>
+                上传文件夹
+                <input
+                  ref={folderInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => {
+                    const files = e.target.files;
+                    if (files && files.length > 0) {
+                      const firstPath = files[0].webkitRelativePath || files[0].name;
+                      const folderName = firstPath.includes('/') ? firstPath.split('/')[0] : files[0].name;
+                      prepareUpload(files, folderName);
+                    }
+                    e.target.value = '';
+                  }}
+                  disabled={uploading}
+                />
+              </label>
+              <button
+                type="button"
+                onClick={loadProjectSpace}
+                className="px-2.5 py-1 rounded text-xs border hover:bg-gray-100"
+                style={{ borderColor: '#CBD5E1', color: '#475569' }}
+              >
+                刷新
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-5 py-4 space-y-5">
+          {message && (
+            <div
+              className="px-3 py-2 rounded-lg text-sm"
+              style={{
+                backgroundColor: message.type === 'success' ? '#F0FFF4' : '#FFF5F5',
+                color: message.type === 'success' ? '#16A34A' : '#DC2626',
+                border: `1px solid ${message.type === 'success' ? '#BBF7D0' : '#FECACA'}`,
+              }}
+            >
+              {message.text}
+            </div>
+          )}
+
+          <div className="rounded-lg border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FAFBFC' }}>
+            <div className="flex items-center justify-between gap-3 mb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-1 h-4 rounded-full" style={{ backgroundColor: '#8B5CF6' }} />
+                <span className="text-sm font-semibold" style={{ color: '#374151' }}>项目空间上传</span>
+              </div>
+              <span className="text-xs" style={{ color: '#64748B' }}>整个页面支持拖拽上传</span>
+            </div>
+
+            {uploadProgress.active ? (
+              <div className="flex items-center gap-3 px-3 py-2 rounded-md" style={{ backgroundColor: '#F0F7FF', border: '1px solid #B3D9FF' }}>
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs" style={{ color: '#0073E6' }}>{uploadProgress.label}</span>
+                    <span className="text-xs font-medium" style={{ color: '#0073E6' }}>{uploadProgress.percent}%</span>
+                  </div>
+                  <div className="w-full h-1.5 bg-white rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress.percent}%`, backgroundColor: '#0073E6' }} />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs leading-5" style={{ color: '#64748B' }}>
+                选择文件后会弹窗确认上传到公共空间或你的个人空间。支持拖拽文件、文件夹、压缩包到当前项目空间页面，拖入整个文件夹时会自动压缩为 `zip` 后保存。
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-5">
+            <div className="rounded-2xl border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFCF6' }}>
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div>
+                  <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>公共文件</h4>
+                  <p className="text-xs mt-1" style={{ color: '#6B7280' }}>所有成员可见，适合存放共享资料、版本包、操作说明。</p>
+                </div>
+                <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: '#FFF7ED', color: '#B45309' }}>
+                  {data?.publicFiles.length || 0} 个文件
+                </span>
+              </div>
+              <div className="space-y-2">
+                {data && data.publicFiles.length > 0 ? data.publicFiles.map(renderFileRow) : (
+                  <div className="rounded-xl border border-dashed px-4 py-8 text-center text-sm" style={{ borderColor: '#FCD34D', color: '#94A3B8', backgroundColor: '#FFFFFF' }}>
+                    这里暂时还没有公共文件，上传后会长期展示在这里。
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#F8FAFC' }}>
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div>
+                  <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>各用户的文件</h4>
+                  <p className="text-xs mt-1" style={{ color: '#6B7280' }}>仅展示已上传过内容的成员空间，文件默认按上传时间倒序排列。</p>
+                </div>
+                <span className="text-xs px-2 py-1 rounded-full" style={{ backgroundColor: '#EFF6FF', color: '#2563EB' }}>
+                  {data?.personalSpaces.length || 0} 个空间
+                </span>
+              </div>
+              <div className="space-y-4">
+                {data && data.personalSpaces.length > 0 ? data.personalSpaces.map(space => (
+                  <div key={space.username} className="rounded-2xl border p-3" style={{ borderColor: '#D9E2EC', backgroundColor: '#FFFFFF' }}>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center justify-center w-8 h-8 rounded-full" style={{ backgroundColor: '#EEF2FF', color: '#4F46E5' }}>
+                          {space.username.slice(0, 1)}
+                        </div>
+                        <div>
+                          <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>{space.username}</div>
+                          <div className="text-[11px]" style={{ color: '#64748B' }}>{space.files.length} 个文件</div>
+                        </div>
+                      </div>
+                      {space.username === currentUser.username && (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#DBEAFE', color: '#1D4ED8' }}>
+                          我的空间
+                        </span>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      {space.files.map(renderFileRow)}
+                    </div>
+                  </div>
+                )) : (
+                  <div className="rounded-xl border border-dashed px-4 py-8 text-center text-sm" style={{ borderColor: '#CBD5E1', color: '#94A3B8', backgroundColor: '#FFFFFF' }}>
+                    当前还没有成员上传到个人空间。
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {pendingUpload && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(15, 23, 42, 0.3)' }}>
+          <div className="bg-white rounded-2xl shadow-2xl w-[420px] max-w-[92vw] overflow-hidden">
+            <div className="px-5 py-4 border-b" style={{ borderColor: '#E5E7EB', background: 'linear-gradient(135deg, #FFF8F1 0%, #FFFFFF 100%)' }}>
+              <div className="text-base font-bold" style={{ color: '#1F2937' }}>选择上传空间</div>
+              <div className="text-xs mt-1" style={{ color: '#64748B' }}>
+                已选择 {pendingUpload.files.length} 个文件{pendingUpload.folderName ? `，来源文件夹：${pendingUpload.folderName}` : ''}
+              </div>
+            </div>
+            <div className="px-5 py-4 space-y-3">
+              <button
+                type="button"
+                onClick={() => handleFileUpload(pendingUpload.files, 'public', pendingUpload.folderName, pendingUpload.filePaths)}
+                className="w-full text-left rounded-xl border px-4 py-3 hover:bg-amber-50 transition-colors"
+                style={{ borderColor: '#FCD34D', backgroundColor: '#FFFDF7' }}
+              >
+                <div className="text-sm font-semibold" style={{ color: '#B45309' }}>上传到公共空间</div>
+                <div className="text-xs mt-1" style={{ color: '#7C6F64' }}>适合共享资料、测试包、说明文档，所有成员都能快速找到。</div>
+              </button>
+              <button
+                type="button"
+                onClick={() => handleFileUpload(pendingUpload.files, 'personal', pendingUpload.folderName, pendingUpload.filePaths)}
+                className="w-full text-left rounded-xl border px-4 py-3 hover:bg-blue-50 transition-colors"
+                style={{ borderColor: '#BFDBFE', backgroundColor: '#F8FBFF' }}
+              >
+                <div className="text-sm font-semibold" style={{ color: '#1D4ED8' }}>上传到我的空间</div>
+                <div className="text-xs mt-1" style={{ color: '#64748B' }}>会归档到 {currentUser.username} 名下，方便保留个人调试材料和中间过程文件。</div>
+              </button>
+            </div>
+            <div className="px-5 py-3 border-t flex justify-end" style={{ borderColor: '#E5E7EB' }}>
+              <button
+                type="button"
+                onClick={() => setPendingUpload(null)}
+                className="text-sm px-4 py-1.5 rounded border hover:bg-gray-50"
+                style={{ borderColor: '#D1D5DB', color: '#475569' }}
+              >
+                取消
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
