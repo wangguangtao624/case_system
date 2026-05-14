@@ -36,6 +36,9 @@ function initializeDatabase(db: Database.Database) {
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       name TEXT NOT NULL,
       sort_order INTEGER DEFAULT 0,
+      publish_status TEXT DEFAULT 'draft',
+      published_at TEXT DEFAULT NULL,
+      published_by TEXT DEFAULT '',
       created_at TEXT DEFAULT (datetime('now', 'localtime'))
     );
 
@@ -233,6 +236,35 @@ function initializeDatabase(db: Database.Database) {
   try {
     db.exec(`ALTER TABLE projects ADD COLUMN high_priority_end_date TEXT DEFAULT NULL`);
   } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN publish_status TEXT DEFAULT 'draft'`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN published_at TEXT DEFAULT NULL`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE projects ADD COLUMN published_by TEXT DEFAULT ''`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`
+      UPDATE projects
+      SET publish_status = CASE
+        WHEN is_archived = 1 THEN 'archived'
+        ELSE 'published'
+      END
+      WHERE publish_status IS NULL
+         OR publish_status = ''
+         OR publish_status NOT IN ('draft', 'published', 'archived')
+    `);
+  } catch { /* ignore migration errors */ }
+
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_projects_publish_status ON projects(publish_status, sort_order, id)`);
+  } catch { /* ignore index errors */ }
 
   // Migration: create bugs table
   try {

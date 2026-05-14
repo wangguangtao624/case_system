@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
 type AssignmentRow = {
   level: string;
@@ -59,17 +59,25 @@ export async function GET(request: NextRequest) {
     const priorityMode = searchParams.get('priorityMode') === 'high' ? 'high' : 'all';
     const projectId = Number(searchParams.get('projectId') || 0);
     const includeArchived = searchParams.get('includeArchived') === '1';
+    const manager = isManagerUser(user.username);
 
     let projectQuery = `
-      SELECT p.id, p.name, p.start_date, p.end_date, p.high_priority_start_date, p.high_priority_end_date, p.is_archived
+      SELECT p.id, p.name, p.start_date, p.end_date, p.high_priority_start_date, p.high_priority_end_date, p.is_archived, p.publish_status
       FROM projects p
     `;
     const projectParams: number[] = [];
     if (projectId > 0) {
       projectQuery += ' WHERE p.id = ?';
       projectParams.push(projectId);
+      if (!manager) {
+        projectQuery += " AND p.publish_status = 'published'";
+      }
     } else {
-      projectQuery += includeArchived ? ' WHERE 1 = 1' : ' WHERE p.is_archived = 0';
+      if (includeArchived && manager) {
+        projectQuery += " WHERE p.publish_status IN ('published', 'archived')";
+      } else {
+        projectQuery += " WHERE p.publish_status = 'published' AND p.is_archived = 0";
+      }
     }
     projectQuery += ' ORDER BY p.is_archived ASC, p.sort_order, p.id';
 
@@ -81,6 +89,7 @@ export async function GET(request: NextRequest) {
       high_priority_start_date: string | null;
       high_priority_end_date: string | null;
       is_archived: number;
+      publish_status: string;
     }[];
 
     const assignments = db.prepare(`

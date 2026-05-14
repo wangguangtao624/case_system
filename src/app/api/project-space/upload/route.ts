@@ -1,12 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb, getStoragePath } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import archiver from 'archiver';
-
-const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
 
 export async function POST(request: NextRequest) {
   try {
@@ -28,16 +26,20 @@ export async function POST(request: NextRequest) {
 
     const db = getDb();
     const project = db.prepare(`
-      SELECT id, is_archived
+      SELECT id, is_archived, publish_status
       FROM projects
       WHERE id = ?
-    `).get(projectId) as { id: number; is_archived: number } | undefined;
+    `).get(projectId) as { id: number; is_archived: number; publish_status: string } | undefined;
 
     if (!project) {
       return NextResponse.json({ error: '项目不存在' }, { status: 404 });
     }
 
-    if (project.is_archived === 1 && !MANAGER_USERNAMES.includes(user.username)) {
+    if (project.publish_status === 'draft' && !isManagerUser(user.username)) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+    }
+
+    if (project.is_archived === 1 && !isManagerUser(user.username)) {
       return NextResponse.json({ error: '归档项目不允许上传项目空间文件' }, { status: 403 });
     }
 

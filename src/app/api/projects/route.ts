@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
-
-const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
 export async function GET() {
   try {
@@ -10,8 +8,11 @@ export async function GET() {
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
 
     const db = getDb();
-    // All projects are public now, include archive info
-    const projects = db.prepare('SELECT *, (SELECT username FROM users WHERE id = projects.user_id) as creator_name FROM projects ORDER BY is_archived ASC, sort_order, id').all();
+    const manager = isManagerUser(user.username);
+    const query = manager
+      ? 'SELECT *, (SELECT username FROM users WHERE id = projects.user_id) as creator_name FROM projects ORDER BY CASE publish_status WHEN \'draft\' THEN 0 WHEN \'published\' THEN 1 ELSE 2 END, sort_order, id'
+      : "SELECT *, (SELECT username FROM users WHERE id = projects.user_id) as creator_name FROM projects WHERE publish_status = 'published' ORDER BY sort_order, id";
+    const projects = db.prepare(query).all();
     return NextResponse.json({ projects });
   } catch (error) {
     console.error('Get projects error:', error);
@@ -23,7 +24,7 @@ export async function POST(request: NextRequest) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
-    if (!MANAGER_USERNAMES.includes(user.username)) {
+    if (!isManagerUser(user.username)) {
       return NextResponse.json({ error: '无创建权限' }, { status: 403 });
     }
 
@@ -34,7 +35,10 @@ export async function POST(request: NextRequest) {
 
     const db = getDb();
     const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM projects').get() as { m: number | null };
-    const result = db.prepare('INSERT INTO projects (user_id, name, sort_order, is_public) VALUES (?, ?, ?, 1)').run(user.id, name.trim(), (maxOrder.m || 0) + 1);
+    const result = db.prepare(`
+      INSERT INTO projects (user_id, name, sort_order, is_public, publish_status)
+      VALUES (?, ?, ?, 1, 'draft')
+    `).run(user.id, name.trim(), (maxOrder.m || 0) + 1);
 
     return NextResponse.json({ success: true, id: result.lastInsertRowid });
   } catch (error) {
@@ -47,18 +51,30 @@ export async function PUT(request: NextRequest) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
-    if (!MANAGER_USERNAMES.includes(user.username)) {
+    if (!isManagerUser(user.username)) {
       return NextResponse.json({ error: '无修改权限' }, { status: 403 });
     }
 
-    const { id, name, start_date, end_date, priorityMode } = await request.json();
+    const { id, name, start_date, end_date, priorityMode, action } = await request.json();
     if (!id) {
       return NextResponse.json({ error: '参数错误' }, { status: 400 });
     }
 
     const db = getDb();
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as { id: number } | undefined;
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as { id: number; publish_status?: string } | undefined;
     if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
+
+    if (action === 'publish') {
+      db.prepare(`
+        UPDATE projects
+        SET publish_status = 'published',
+            is_archived = 0,
+            published_at = datetime('now', 'localtime'),
+            published_by = ?
+        WHERE id = ?
+      `).run(user.username, id);
+      return NextResponse.json({ success: true, publishStatus: 'published' });
+    }
 
     if (name !== undefined && name !== null) {
       if (!name.trim()) return NextResponse.json({ error: '项目名称不能为空' }, { status: 400 });
@@ -86,7 +102,7 @@ export async function DELETE(request: NextRequest) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
-    if (!MANAGER_USERNAMES.includes(user.username)) {
+    if (!isManagerUser(user.username)) {
       return NextResponse.json({ error: '无删除权限' }, { status: 403 });
     }
 

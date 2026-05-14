@@ -37,6 +37,7 @@ interface TreeNode {
   testerName?: string;
   resolvedTesterNames?: string;
   isArchived?: boolean;
+  publishStatus?: 'draft' | 'published' | 'archived';
 }
 
 interface CaseData {
@@ -286,7 +287,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [allUsers, setAllUsers] = useState<UserItem[]>([]);
   const [testerFilter, setTesterFilter] = useState<string>(''); // '' = all, 'my' = my tasks, user_id = specific
-  const [projectFilter, setProjectFilter] = useState<string>('active'); // 'active', 'archived', 'all'
+  const [projectFilter, setProjectFilter] = useState<string>('active'); // 'draft', 'active', 'archived', 'all'
   const [archiveDialog, setArchiveDialog] = useState<{ projectId: number; projectName: string } | null>(null);
   const [archiveNote, setArchiveNote] = useState('');
   const [archiving, setArchiving] = useState(false);
@@ -300,6 +301,7 @@ export default function DashboardPage() {
   const [selectedProjectOverview, setSelectedProjectOverview] = useState<KanbanProjectStat | null>(null);
   const [selectedProjectOverviewLoading, setSelectedProjectOverviewLoading] = useState(false);
   const [selectedProjectOverviewMode, setSelectedProjectOverviewMode] = useState<KanbanPriorityMode>('all');
+  const [selectedProjectOverviewTesterFilter, setSelectedProjectOverviewTesterFilter] = useState<string>('all');
   const [selectedProjectSpace, setSelectedProjectSpace] = useState<{ projectId: number; projectName: string } | null>(null);
   // Bug Report
   const [showBugReport, setShowBugReport] = useState(false);
@@ -351,7 +353,11 @@ export default function DashboardPage() {
     }
   }, []);
 
-  const fetchProjectOverview = useCallback(async (projectId: number, priorityMode: KanbanPriorityMode = 'all') => {
+  const fetchProjectOverview = useCallback(async (
+    projectId: number,
+    priorityMode: KanbanPriorityMode = 'all',
+    overviewTesterFilter = 'all',
+  ) => {
     setShowKanban(false);
     setShowJiraBoard(false);
     setKanbanData(null);
@@ -359,6 +365,7 @@ export default function DashboardPage() {
     setSelectedProjectSpace(null);
     setSelectedProjectOverviewLoading(true);
     setSelectedProjectOverviewMode(priorityMode);
+    setSelectedProjectOverviewTesterFilter(overviewTesterFilter);
     try {
       const params = new URLSearchParams({
         priorityMode,
@@ -621,6 +628,12 @@ export default function DashboardPage() {
     loadTree(filterId || '', value);
   };
 
+  const getResolvedSidebarTesterFilter = useCallback(() => {
+    if (testerFilter === 'my' && user) return String(user.id);
+    if (testerFilter) return testerFilter;
+    return 'all';
+  }, [testerFilter, user]);
+
   const handleSelectProjectSpace = useCallback((projectId: number, projectName: string) => {
     setShowKanban(false);
     setShowJiraBoard(false);
@@ -790,7 +803,7 @@ export default function DashboardPage() {
               onSelectCase={handleSelectCase}
               onSelectProject={(projectId: number) => {
                 setSelectedNodeId(`project-${projectId}`);
-                fetchProjectOverview(projectId);
+                fetchProjectOverview(projectId, 'all', getResolvedSidebarTesterFilter());
               }}
               onSelectProjectSpace={handleSelectProjectSpace}
               onTreeChange={() => loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter)}
@@ -803,6 +816,27 @@ export default function DashboardPage() {
               projectFilter={projectFilter}
               onProjectFilterChange={handleProjectFilterChange}
               onArchive={(projectId, projectName) => setArchiveDialog({ projectId, projectName })}
+              onPublishProject={async (projectId: number) => {
+                try {
+                  const res = await fetch('/api/projects', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: projectId, action: 'publish' }),
+                  });
+                  const data = await res.json();
+                  if (!data.success) {
+                    alert(data.error || '发布失败');
+                    return;
+                  }
+                  if (projectFilter === 'draft') {
+                    loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', 'draft');
+                  } else {
+                    loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
+                  }
+                } catch {
+                  alert('发布失败');
+                }
+              }}
               onOpenKanban={() => {
                 setSelectedCase(null);
                 setSelectedProjectOverview(null);
@@ -964,7 +998,9 @@ export default function DashboardPage() {
               isHighPriorityMode={selectedProjectOverviewMode === 'high'}
               onNavigateCase={handleOpenCaseById}
               onNavigateTreeNode={handleNavigateTreeNode}
-              onPriorityModeChange={(priorityMode) => fetchProjectOverview(selectedProjectOverview.id, priorityMode)}
+              testerFilter={selectedProjectOverviewTesterFilter}
+              onTesterFilterChange={setSelectedProjectOverviewTesterFilter}
+              onPriorityModeChange={(priorityMode) => fetchProjectOverview(selectedProjectOverview.id, priorityMode, selectedProjectOverviewTesterFilter)}
               allUsers={allUsers}
             />
           ) : selectedProjectOverviewLoading ? (
@@ -1213,6 +1249,7 @@ function SidebarTree({
   projectFilter,
   onProjectFilterChange,
   onArchive,
+  onPublishProject,
   onOpenKanban,
   onOpenJiraBoard,
   onDeleteArchived,
@@ -1236,6 +1273,7 @@ function SidebarTree({
   projectFilter: string;
   onProjectFilterChange: (value: string) => void;
   onArchive: (projectId: number, projectName: string) => void;
+  onPublishProject: (projectId: number) => Promise<void> | void;
   onOpenKanban: () => void;
   onOpenJiraBoard: () => void;
   onDeleteArchived: (projectId: number) => Promise<void> | void;
@@ -1343,7 +1381,11 @@ function SidebarTree({
         });
       }
       setAddingNode(null);
-      onTreeChange();
+      if (addingNode.type === 'project' && projectFilter !== 'draft') {
+        onProjectFilterChange('draft');
+      } else {
+        onTreeChange();
+      }
     } catch (error) {
       console.error('Add node error:', error);
     }
@@ -1566,6 +1608,9 @@ function SidebarTree({
                 {node.isArchived && (
                   <span className="text-xs px-1 rounded flex-shrink-0" style={{ color: '#92400E', backgroundColor: '#FEF3C7', fontSize: '10px' }}>已归档</span>
                 )}
+                {node.type === 'project' && node.publishStatus === 'draft' && !node.isArchived && (
+                  <span className="text-xs px-1 rounded flex-shrink-0" style={{ color: '#7C3AED', backgroundColor: '#F3E8FF', fontSize: '10px' }}>未发布</span>
+                )}
                 {node.type === 'module' && node.resolvedTesterNames && (
                   <span className="text-xs px-1 rounded truncate" style={{ color: '#999', backgroundColor: '#F5F5F5', fontSize: '10px', maxWidth: '120px' }} title={node.resolvedTesterNames}>{node.resolvedTesterNames}</span>
                 )}
@@ -1711,6 +1756,24 @@ function SidebarTree({
 
       {/* Two-level Filter */}
       <div className="px-3 py-2 border-b space-y-2" style={{ borderColor: '#EEEEEE' }}>
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={onOpenKanban}
+            className="text-xs px-2 py-1.5 rounded border hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"
+            style={{ borderColor: '#0073E6', color: '#0073E6' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
+            项目看板
+          </button>
+          <button
+            onClick={onOpenJiraBoard}
+            className="text-xs px-2 py-1.5 rounded border hover:bg-orange-50 transition-colors flex items-center justify-center gap-1"
+            style={{ borderColor: '#F59E0B', color: '#B45309' }}
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><polyline points="7.5 4.21 12 6.81 16.5 4.21" /><polyline points="7.5 19.79 7.5 14.6 3 12" /><polyline points="21 12 16.5 14.6 16.5 19.79" /><polyline points="12 22.08 12 17" /><polyline points="12 17 16.5 14.6" /><polyline points="12 17 7.5 14.6" /><polyline points="12 6.81 12 12" /></svg>
+            JIRA看板
+          </button>
+        </div>
         {/* Level 1: Project Status */}
         <select
           value={projectFilter}
@@ -1718,9 +1781,10 @@ function SidebarTree({
           className="w-full text-xs px-2 py-1.5 border rounded"
           style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFF' }}
         >
+          {isManager && <option value="draft">未发布的用例</option>}
           <option value="active">进行中的项目</option>
           <option value="archived">已归档项目</option>
-          <option value="all">全部项目</option>
+          {isManager && <option value="all">全部项目</option>}
         </select>
         {/* Level 2: Tester */}
         <select
@@ -1735,29 +1799,6 @@ function SidebarTree({
             <option key={u.id} value={String(u.id)}>{u.username}</option>
           ))}
         </select>
-        {/* Action Buttons */}
-        <div className="flex items-center gap-1">
-          {projectFilter === 'active' && (
-            <div className="w-full space-y-1">
-              <button
-                onClick={onOpenKanban}
-                className="w-full text-xs px-2 py-1.5 rounded border hover:bg-blue-50 transition-colors flex items-center justify-center gap-1"
-                style={{ borderColor: '#0073E6', color: '#0073E6' }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" /><rect x="14" y="14" width="7" height="7" /><rect x="3" y="14" width="7" height="7" /></svg>
-                项目看板
-              </button>
-              <button
-                onClick={onOpenJiraBoard}
-                className="w-full text-xs px-2 py-1.5 rounded border hover:bg-orange-50 transition-colors flex items-center justify-center gap-1"
-                style={{ borderColor: '#F59E0B', color: '#B45309' }}
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" /><polyline points="7.5 4.21 12 6.81 16.5 4.21" /><polyline points="7.5 19.79 7.5 14.6 3 12" /><polyline points="21 12 16.5 14.6 16.5 19.79" /><polyline points="12 22.08 12 17" /><polyline points="12 17 16.5 14.6" /><polyline points="12 17 7.5 14.6" /><polyline points="12 6.81 12 12" /></svg>
-                JIRA看板
-              </button>
-            </div>
-          )}
-        </div>
       </div>
 
       {/* Tree */}
@@ -1844,7 +1885,16 @@ function SidebarTree({
           >
             {isManager && contextMenu.node.type === 'project' && (
               <>
-                {!contextMenu.node.isArchived && (
+                {contextMenu.node.publishStatus === 'draft' && !contextMenu.node.isArchived && (
+                  <button
+                    className="w-full text-left px-3 py-1.5 text-sm hover:bg-violet-50"
+                    style={{ color: '#7C3AED' }}
+                    onClick={() => { onPublishProject(contextMenu.node.dbId); setContextMenu(null); }}
+                  >
+                    发布项目
+                  </button>
+                )}
+                {contextMenu.node.publishStatus !== 'draft' && !contextMenu.node.isArchived && (
                   <button
                     className="w-full text-left px-3 py-1.5 text-sm hover:bg-amber-50"
                     style={{ color: '#D97706' }}
@@ -5512,6 +5562,8 @@ function ProjectExecutionSummary({
   onNavigateCase,
   onNavigateTreeNode,
   onPriorityModeChange,
+  testerFilter,
+  onTesterFilterChange,
   allUsers,
 }: {
   selectedProject: KanbanProjectStat;
@@ -5519,6 +5571,8 @@ function ProjectExecutionSummary({
   onNavigateCase: (caseId: number) => void;
   onNavigateTreeNode: (type: 'project' | 'module', dbId: number) => void;
   onPriorityModeChange?: (priorityMode: KanbanPriorityMode) => void;
+  testerFilter?: string;
+  onTesterFilterChange?: (value: string) => void;
   allUsers: UserItem[];
 }) {
   const [showOnlyIncompleteModules, setShowOnlyIncompleteModules] = useState(false);
@@ -5526,8 +5580,11 @@ function ProjectExecutionSummary({
   const [expandedProjectJiraKey, setExpandedProjectJiraKey] = useState<string | null>(null);
   const [projectJiraReporterFilter, setProjectJiraReporterFilter] = useState<string>('all');
   const [projectJiraStatusFilter, setProjectJiraStatusFilter] = useState<'all' | 'open' | 'pending'>('open');
-  const [testerFilter, setTesterFilter] = useState<string>('all');
   const [jiraIssueMap, setJiraIssueMap] = useState<Record<string, JiraIssueSummary>>({});
+  const [localTesterFilter, setLocalTesterFilter] = useState<string>('all');
+
+  const effectiveTesterFilter = testerFilter ?? localTesterFilter;
+  const handleTesterFilterChange = onTesterFilterChange ?? setLocalTesterFilter;
 
   useEffect(() => {
     const links = Array.from(new Set(
@@ -5628,7 +5685,7 @@ function ProjectExecutionSummary({
   };
 
   const visibleTesters = selectedProject.testers.filter(tester => (
-    testerFilter === 'all' || String(tester.userId) === testerFilter
+    effectiveTesterFilter === 'all' || String(tester.userId) === effectiveTesterFilter
   ));
 
   const getModuleCases = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat): KanbanCaseStat[] => {
@@ -5924,8 +5981,8 @@ function ProjectExecutionSummary({
             <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>执行者与二级目录进度</h4>
             <div className="flex flex-wrap items-center gap-2">
               <select
-                value={testerFilter}
-                onChange={(e) => setTesterFilter(e.target.value)}
+                value={effectiveTesterFilter}
+                onChange={(e) => handleTesterFilterChange(e.target.value)}
                 className="text-xs px-2 py-1.5 border rounded"
                 style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
               >
@@ -6032,7 +6089,7 @@ function ProjectExecutionSummary({
             })}
             {visibleTesters.length === 0 && (
               <div className="rounded-md border px-4 py-6 text-sm text-center" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
-                {testerFilter === 'all'
+                {effectiveTesterFilter === 'all'
                   ? (isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者')
                   : '当前筛选条件下暂无执行者任务'}
               </div>

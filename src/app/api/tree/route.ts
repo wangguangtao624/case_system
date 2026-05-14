@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
-
-const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
 export async function GET(request: NextRequest) {
   try {
@@ -13,7 +11,8 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const testerFilter = searchParams.get('testerId'); // filter by assigned tester
-    const archiveFilter = searchParams.get('archive'); // 'active', 'archived', or null (all)
+    const archiveFilter = searchParams.get('archive'); // 'draft' | 'active' | 'archived' | 'all'
+    const manager = isManagerUser(user.username);
 
     // Build a set of case IDs assigned to the tester if filtering
     let filteredCaseIds: Set<number> | null = null;
@@ -51,12 +50,24 @@ export async function GET(request: NextRequest) {
       assignmentMap.set(`${a.level}-${a.target_id}`, { userId: a.user_id, testerName: a.tester_name });
     }
 
-    // Get all projects (all are public now), with archive filter
+    // Get projects by lifecycle state
     let projectQuery = 'SELECT * FROM projects';
-    if (archiveFilter === 'active') {
-      projectQuery += ' WHERE is_archived = 0';
-    } else if (archiveFilter === 'archived') {
-      projectQuery += ' WHERE is_archived = 1';
+    if (manager) {
+      if (archiveFilter === 'draft') {
+        projectQuery += " WHERE publish_status = 'draft'";
+      } else if (archiveFilter === 'active') {
+        projectQuery += " WHERE publish_status = 'published' AND is_archived = 0";
+      } else if (archiveFilter === 'archived') {
+        projectQuery += " WHERE publish_status = 'archived' OR is_archived = 1";
+      } else {
+        projectQuery += " WHERE publish_status IN ('draft', 'published', 'archived')";
+      }
+    } else {
+      if (archiveFilter === 'archived') {
+        projectQuery += " WHERE publish_status = 'archived' OR is_archived = 1";
+      } else {
+        projectQuery += " WHERE publish_status = 'published' AND is_archived = 0";
+      }
     }
     projectQuery += ' ORDER BY sort_order, id';
     const projects = db.prepare(projectQuery).all() as {
@@ -65,6 +76,7 @@ export async function GET(request: NextRequest) {
       sort_order: number;
       is_public: number;
       user_id: number;
+      publish_status: 'draft' | 'published' | 'archived';
     }[];
 
     const tree: TreeNode[] = [];
@@ -167,6 +179,7 @@ export async function GET(request: NextRequest) {
             name: '项目空间',
             projectId: project.id,
             isArchived: !!(project as Record<string, unknown>).is_archived,
+            publishStatus: project.publish_status,
           },
           ...moduleNodes,
         ],
@@ -174,13 +187,14 @@ export async function GET(request: NextRequest) {
         testerName: projectTester?.testerName,
         resolvedTesterNames: projectAllTesterNames.length > 0 ? projectAllTesterNames.join('、') : undefined,
         isArchived: !!(project as Record<string, unknown>).is_archived,
+        publishStatus: project.publish_status,
       });
     }
 
     return NextResponse.json({
       tree,
       username: user.username,
-      isManager: MANAGER_USERNAMES.includes(user.username),
+      isManager: manager,
     });
   } catch (error) {
     console.error('Get tree error:', error);
@@ -202,4 +216,5 @@ interface TreeNode {
   testerName?: string;
   resolvedTesterNames?: string;
   isArchived?: boolean;
+  publishStatus?: 'draft' | 'published' | 'archived';
 }

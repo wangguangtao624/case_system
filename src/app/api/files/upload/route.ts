@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb, getStoragePath } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -22,19 +22,22 @@ export async function POST(request: NextRequest) {
     // Verify case exists
     const db = getDb();
     const caseExists = db.prepare(`
-      SELECT c.id, p.is_archived FROM cases c
+      SELECT c.id, p.is_archived, p.publish_status FROM cases c
       JOIN modules m ON c.module_id = m.id
       JOIN projects p ON m.project_id = p.id
       WHERE c.id = ?
-    `).get(Number(caseId)) as { id: number; is_archived: number } | undefined;
+    `).get(Number(caseId)) as { id: number; is_archived: number; publish_status: string } | undefined;
 
     if (!caseExists) {
       return NextResponse.json({ error: '用例不存在' }, { status: 404 });
     }
 
+    if (caseExists.publish_status === 'draft' && !isManagerUser(user.username)) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+    }
+
     if (caseExists.is_archived === 1) {
-      const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
-      if (!MANAGER_USERNAMES.includes(user.username)) {
+      if (!isManagerUser(user.username)) {
         return NextResponse.json({ error: '归档项目不允许上传文件' }, { status: 403 });
       }
     }

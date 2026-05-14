@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
 interface ProjectSpaceFileRow {
   id: number;
@@ -31,13 +31,16 @@ export async function GET(
 
     const db = getDb();
     const project = db.prepare(`
-      SELECT id, name, is_archived
+      SELECT id, name, is_archived, publish_status
       FROM projects
       WHERE id = ?
-    `).get(resolvedProjectId) as { id: number; name: string; is_archived: number } | undefined;
+    `).get(resolvedProjectId) as { id: number; name: string; is_archived: number; publish_status: string } | undefined;
 
     if (!project) {
       return NextResponse.json({ error: '项目不存在' }, { status: 404 });
+    }
+    if (project.publish_status === 'draft' && !isManagerUser(user.username)) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
     }
 
     const rows = db.prepare(`

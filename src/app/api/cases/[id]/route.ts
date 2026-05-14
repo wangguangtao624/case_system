@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
-
-const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
 export async function GET(
   request: NextRequest,
@@ -17,7 +15,7 @@ export async function GET(
 
     const db = getDb();
     const caseData = db.prepare(`
-      SELECT c.*, m.name as module_name, m.id as module_id, p.name as project_name, p.id as project_id
+      SELECT c.*, m.name as module_name, m.id as module_id, p.name as project_name, p.id as project_id, p.publish_status
       FROM cases c
       JOIN modules m ON c.module_id = m.id
       JOIN projects p ON m.project_id = p.id
@@ -25,6 +23,9 @@ export async function GET(
     `).get(caseId);
 
     if (!caseData) return NextResponse.json({ error: '用例不存在' }, { status: 404 });
+    if ((caseData as Record<string, unknown>).publish_status === 'draft' && !isManagerUser(user.username)) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+    }
 
     const files = db.prepare('SELECT * FROM files WHERE case_id = ? ORDER BY created_at').all(caseId);
 
@@ -51,7 +52,7 @@ export async function GET(
       WHERE c.id = ?
     `).get(caseId) as { tester_id: number | null; tester_name: string | null; assignment_level: string } | undefined;
 
-    const isManager = MANAGER_USERNAMES.includes(user.username);
+    const isManager = isManagerUser(user.username);
     // Check if current user is the assigned tester for this case
     const isAssignedTester = testerInfo?.tester_id === user.id;
 

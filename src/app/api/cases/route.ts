@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
-
-const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
 function isManager(username: string): boolean {
-  return MANAGER_USERNAMES.includes(username);
+  return isManagerUser(username);
 }
 
 // Helper: check if module exists
@@ -48,6 +46,15 @@ export async function GET(request: NextRequest) {
     if (!moduleId) return NextResponse.json({ error: '缺少模块ID' }, { status: 400 });
 
     const db = getDb();
+    const projectRow = db.prepare(`
+      SELECT p.publish_status
+      FROM modules m
+      JOIN projects p ON m.project_id = p.id
+      WHERE m.id = ?
+    `).get(Number(moduleId)) as { publish_status: string } | undefined;
+    if (projectRow?.publish_status === 'draft' && !isManagerUser(user.username)) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+    }
     const cases = db.prepare(`
       SELECT c.* FROM cases c
       JOIN modules m ON c.module_id = m.id
@@ -113,14 +120,17 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '模块不存在' }, { status: 404 });
     }
 
+    const manager = isManager(user.username);
+
     const archivedRow = db.prepare(`
-      SELECT p.is_archived FROM projects p
+      SELECT p.is_archived, p.publish_status FROM projects p
       JOIN modules m ON m.project_id = p.id
       WHERE m.id = ?
-    `).get(caseRow.module_id) as { is_archived: number } | undefined;
+    `).get(caseRow.module_id) as { is_archived: number; publish_status: string } | undefined;
     const isArchived = archivedRow?.is_archived === 1;
-
-    const manager = isManager(user.username);
+    if (archivedRow?.publish_status === 'draft' && !manager) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+    }
 
     if (manager) {
       // Manager: can edit all fields

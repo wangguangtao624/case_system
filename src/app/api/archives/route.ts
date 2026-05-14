@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
-
-const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
 export async function POST(request: NextRequest) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
-    if (!MANAGER_USERNAMES.includes(user.username)) {
+    if (!isManagerUser(user.username)) {
       return NextResponse.json({ error: '仅管理者可归档' }, { status: 403 });
     }
 
@@ -21,7 +19,7 @@ export async function POST(request: NextRequest) {
     if (project.is_archived) return NextResponse.json({ error: '项目已归档' }, { status: 400 });
 
     db.prepare(
-      'UPDATE projects SET is_archived = 1, archived_at = datetime(\'now\', \'localtime\'), archive_note = ?, archived_by = ? WHERE id = ?'
+      "UPDATE projects SET is_archived = 1, publish_status = 'archived', archived_at = datetime('now', 'localtime'), archive_note = ?, archived_by = ? WHERE id = ?"
     ).run(archiveNote || '', user.username, projectId);
 
     return NextResponse.json({ success: true });
@@ -114,7 +112,7 @@ export async function GET(request: NextRequest) {
         SELECT p.*, u.username as creator_name
         FROM projects p
         LEFT JOIN users u ON p.user_id = u.id
-        WHERE p.is_archived = 1
+        WHERE p.publish_status = 'archived' OR p.is_archived = 1
         ORDER BY p.archived_at DESC
       `).all();
       return NextResponse.json({ projects });
@@ -125,7 +123,7 @@ export async function GET(request: NextRequest) {
         SELECT p.*, u.username as creator_name
         FROM projects p
         LEFT JOIN users u ON p.user_id = u.id
-        WHERE p.is_archived = 0
+        WHERE p.publish_status = 'published' AND p.is_archived = 0
         ORDER BY p.sort_order, p.id
       `).all();
       return NextResponse.json({ projects });
@@ -135,7 +133,7 @@ export async function GET(request: NextRequest) {
       SELECT p.*, u.username as creator_name
       FROM projects p
       LEFT JOIN users u ON p.user_id = u.id
-      ORDER BY p.is_archived ASC, p.sort_order, p.id
+      ORDER BY CASE p.publish_status WHEN 'draft' THEN 0 WHEN 'published' THEN 1 ELSE 2 END, p.sort_order, p.id
     `).all();
     return NextResponse.json({ projects });
   } catch (error) {

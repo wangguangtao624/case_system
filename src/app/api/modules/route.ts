@@ -1,8 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
-
-const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
 export async function GET(request: NextRequest) {
   try {
@@ -14,8 +12,11 @@ export async function GET(request: NextRequest) {
     if (!projectId) return NextResponse.json({ error: '缺少项目ID' }, { status: 400 });
 
     const db = getDb();
-    const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(Number(projectId));
+    const project = db.prepare('SELECT id, publish_status FROM projects WHERE id = ?').get(Number(projectId)) as { id: number; publish_status: string } | undefined;
     if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
+    if (project.publish_status === 'draft' && !isManagerUser(user.username)) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+    }
 
     const modules = db.prepare('SELECT * FROM modules WHERE project_id = ? ORDER BY sort_order, id').all(Number(projectId));
     return NextResponse.json({ modules });
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
-    if (!MANAGER_USERNAMES.includes(user.username)) {
+    if (!isManagerUser(user.username)) {
       return NextResponse.json({ error: '无创建权限' }, { status: 403 });
     }
 
@@ -56,7 +57,7 @@ export async function PUT(request: NextRequest) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
-    if (!MANAGER_USERNAMES.includes(user.username)) {
+    if (!isManagerUser(user.username)) {
       return NextResponse.json({ error: '无修改权限' }, { status: 403 });
     }
 
@@ -82,7 +83,7 @@ export async function DELETE(request: NextRequest) {
   try {
     const user = await getCurrentUser();
     if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
-    if (!MANAGER_USERNAMES.includes(user.username)) {
+    if (!isManagerUser(user.username)) {
       return NextResponse.json({ error: '无删除权限' }, { status: 403 });
     }
 

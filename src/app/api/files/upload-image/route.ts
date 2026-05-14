@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb, getStoragePath } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -21,14 +21,17 @@ export async function POST(request: NextRequest) {
     // Verify case exists
     const db = getDb();
     const caseExists = db.prepare(`
-      SELECT c.id FROM cases c
+      SELECT c.id, p.publish_status FROM cases c
       JOIN modules m ON c.module_id = m.id
       JOIN projects p ON m.project_id = p.id
       WHERE c.id = ?
-    `).get(Number(caseId));
+    `).get(Number(caseId)) as { id: number; publish_status: string } | undefined;
 
     if (!caseExists) {
       return NextResponse.json({ error: '用例不存在' }, { status: 404 });
+    }
+    if (caseExists.publish_status === 'draft' && !isManagerUser(user.username)) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
     }
 
     const storagePath = getStoragePath();

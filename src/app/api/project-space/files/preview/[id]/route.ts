@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 import fs from 'fs';
 
 export async function GET(
@@ -15,7 +15,7 @@ export async function GET(
     const fileId = Number(id);
     const db = getDb();
     const file = db.prepare(`
-      SELECT pf.*
+      SELECT pf.*, p.publish_status
       FROM project_space_files pf
       JOIN projects p ON pf.project_id = p.id
       WHERE pf.id = ?
@@ -24,9 +24,13 @@ export async function GET(
       original_name: string;
       file_type: string;
       storage_path: string;
+      publish_status: string;
     } | undefined;
 
     if (!file) return NextResponse.json({ error: '文件不存在' }, { status: 404 });
+    if (file.publish_status === 'draft' && !isManagerUser(user.username)) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+    }
     if (!fs.existsSync(file.storage_path)) return NextResponse.json({ error: '文件已被删除' }, { status: 404 });
 
     const ext = file.file_type.toLowerCase();

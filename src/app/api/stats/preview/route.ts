@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
-import { getCurrentUser } from '@/lib/auth';
+import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
 type AssignmentRow = {
   level: string;
@@ -44,8 +44,11 @@ export async function GET(request: NextRequest) {
 
     if (level === 'project') {
       // Check permission: project exists
-      const project = db.prepare('SELECT id FROM projects WHERE id = ?').get(dbId) as { id: number } | undefined;
+      const project = db.prepare('SELECT id, publish_status FROM projects WHERE id = ?').get(dbId) as { id: number; publish_status: string } | undefined;
       if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
+      if (project.publish_status === 'draft' && !isManagerUser(user.username)) {
+        return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+      }
 
       // Get all modules under this project
       const modules = db.prepare('SELECT id, name FROM modules WHERE project_id = ? ORDER BY sort_order, id').all(dbId) as { id: number; name: string }[];
@@ -148,11 +151,14 @@ export async function GET(request: NextRequest) {
     if (level === 'module') {
       // Check permission: module exists
       const moduleRow = db.prepare(`
-        SELECT m.id, m.name FROM modules m
+        SELECT m.id, m.name, p.publish_status FROM modules m
         JOIN projects p ON m.project_id = p.id
         WHERE m.id = ?
-      `).get(dbId) as { id: number; name: string } | undefined;
+      `).get(dbId) as { id: number; name: string; publish_status: string } | undefined;
       if (!moduleRow) return NextResponse.json({ error: '模块不存在' }, { status: 404 });
+      if (moduleRow.publish_status === 'draft' && !isManagerUser(user.username)) {
+        return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+      }
 
       // Get all cases under this module
       let cases = db.prepare('SELECT id, case_name, test_result, priority FROM cases WHERE module_id = ? ORDER BY sort_order, id').all(dbId) as {

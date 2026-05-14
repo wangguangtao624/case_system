@@ -23,6 +23,8 @@ function getJwtSecret(): Uint8Array {
 
 const SECRET = getJwtSecret();
 
+export const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'] as const;
+
 export interface UserPayload {
   id: number;
   username: string;
@@ -57,4 +59,8 @@ export async function getCurrentUser(): Promise<UserPayload | null> {
   const user = await verifyToken(token);
   if (!user) return null;
   return user;
+}
+
+export function isManagerUser(username: string): boolean {
+  return MANAGER_USERNAMES.includes(username as typeof MANAGER_USERNAMES[number]);
 }
