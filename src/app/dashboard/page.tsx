@@ -10,7 +10,7 @@ declare global {
     __ioMenuPos?: { x: number; y: number };
   }
 }
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, LabelList } from 'recharts';
 
 // ============ Permission Constants ============
 const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
@@ -744,13 +744,6 @@ export default function DashboardPage() {
                 style={{ color: '#0073E6' }}
               >
                 用户管理
-              </button>
-              <button
-                onClick={() => setShowSettings(true)}
-                className="px-3 py-1.5 text-xs rounded hover:bg-gray-100 transition-colors"
-                style={{ color: '#666' }}
-              >
-                存储设置
               </button>
             </>
           )}
@@ -5671,7 +5664,6 @@ function ProjectExecutionSummary({
     if (Number.isNaN(date.getTime())) return value;
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
   };
-
   const getModuleTooltipText = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat) => (
     `${tester.username} / ${moduleStat.moduleName}
 完成 ${moduleStat.completed}/${moduleStat.total}
@@ -6112,13 +6104,13 @@ function JiraBoardView({
   onClose: () => void;
   onRefresh: () => void;
 }) {
-  const [ownershipMode, setOwnershipMode] = useState<'related' | 'assignee' | 'reporter' | 'creator'>('related');
+  const [ownershipMode, setOwnershipMode] = useState<'related' | 'assignee' | 'reporter' | 'creator'>('assignee');
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'done'>('open');
   const [userFilter, setUserFilter] = useState<string>('all');
   const [projectFilter, setProjectFilter] = useState<string>('all');
   const [issueTypeFilters, setIssueTypeFilters] = useState<Array<'需求' | '故障' | '任务' | '子任务' | 'Epic'>>([]);
   const [keyword, setKeyword] = useState('');
-  const [showPendingOnly, setShowPendingOnly] = useState(false);
+  const [showPendingOnly, setShowPendingOnly] = useState(true);
   const [expandedUserKey, setExpandedUserKey] = useState<string | null>(null);
 
   const getPriorityMeta = (priority: string) => {
@@ -6142,6 +6134,46 @@ function JiraBoardView({
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return value;
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  };
+  const renderIssueDistributionTooltip = ({
+    active,
+    payload,
+    label,
+  }: {
+    active?: boolean;
+    payload?: Array<{ payload?: { 未完成: number; 已完成: number; 问题单总数: number } }>;
+    label?: string;
+  }) => {
+    if (!active || !payload?.length || !payload[0]?.payload) return null;
+    const item = payload[0].payload;
+    return (
+      <div
+        className="rounded-xl border px-3 py-2 shadow-sm"
+        style={{
+          borderColor: '#F1E3CF',
+          backgroundColor: '#FFFFFF',
+          boxShadow: '0 10px 30px rgba(148, 91, 27, 0.08)',
+        }}
+      >
+        <div className="text-xs font-semibold mb-2" style={{ color: '#1F2937' }}>
+          {label}
+        </div>
+        <div className="space-y-1 text-xs">
+          <div className="flex items-center justify-between gap-4">
+            <span style={{ color: '#92400E' }}>总数</span>
+            <span className="font-semibold" style={{ color: '#92400E' }}>{item.问题单总数}</span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span style={{ color: '#B45309' }}>未完成</span>
+            <span className="font-semibold" style={{ color: '#B45309' }}>{item.未完成}</span>
+          </div>
+          <div className="flex items-center justify-between gap-4">
+            <span style={{ color: '#166534' }}>已完成</span>
+            <span className="font-semibold" style={{ color: '#166534' }}>{item.已完成}</span>
+          </div>
+        </div>
+      </div>
+    );
   };
 
   const matchesIssueTypeFilter = (issueType: string) => {
@@ -6168,6 +6200,7 @@ function JiraBoardView({
   const users = data?.users || [];
   const systemUsernames = new Set(users.map(user => user.username));
   const filteredUsers = users
+    .filter(user => user.username !== 'admin')
     .filter(user => userFilter === 'all' || String(user.userId) === userFilter)
     .map(user => {
       const issues = user.issues.filter(issue => {
@@ -6188,7 +6221,6 @@ function JiraBoardView({
         filteredDone: issues.filter(issue => issue.isDone).length,
       };
     })
-    .filter(user => user.filteredIssues.length > 0)
     .sort((a, b) => b.filteredIssues.length - a.filteredIssues.length || a.username.localeCompare(b.username, 'zh-CN'));
 
   const summary = filteredUsers.reduce((acc, user) => ({
@@ -6198,6 +6230,14 @@ function JiraBoardView({
     done: acc.done + user.filteredDone,
     high: acc.high + user.filteredIssues.filter(issue => ['high', 'highest'].includes(issue.priority.toLowerCase())).length,
   }), { users: 0, total: 0, open: 0, done: 0, high: 0 });
+  const hasAnyVisibleIssues = filteredUsers.some(user => user.filteredIssues.length > 0);
+  const issueDistributionChartData = filteredUsers.map(user => ({
+    username: user.username,
+    问题单总数: user.filteredIssues.length,
+    未完成: user.filteredOpen,
+    已完成: user.filteredDone,
+  }));
+  const issueDistributionChartHeight = Math.max(280, issueDistributionChartData.length * 46);
 
   if (loading) {
     return (
@@ -6213,7 +6253,7 @@ function JiraBoardView({
   if (!data) return null;
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full overflow-auto" style={{ background: 'linear-gradient(180deg, #FFFDF9 0%, #FFFFFF 18%)' }}>
       <div className="flex items-center justify-between px-6 py-3 border-b" style={{ borderColor: '#F3E8D6', background: 'linear-gradient(135deg, #FFF8F1 0%, #FFFFFF 58%, #FFFBEB 100%)' }}>
         <div className="flex items-center gap-3">
           <div className="flex items-center justify-center w-8 h-8 rounded-lg" style={{ backgroundColor: '#F59E0B' }}>
@@ -6420,47 +6460,112 @@ function JiraBoardView({
           />
 
         </div>
+
+        {issueDistributionChartData.length > 0 && (
+          <div
+            className="mt-4 rounded-2xl border px-4 py-4"
+            style={{
+              borderColor: '#F1E3CF',
+              background: 'linear-gradient(135deg, #FFFFFF 0%, #FFF8F1 100%)',
+            }}
+          >
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>
+                  测试组成员问题单分布
+                </div>
+                <div className="text-xs mt-1" style={{ color: '#7C6F64' }}>
+                  基于当前筛选条件，按成员展示当前可见问题单总量；悬浮时可查看未完成和已完成的具体拆分。
+                </div>
+              </div>
+              <span
+                className="text-[11px] px-2 py-1 rounded-full whitespace-nowrap"
+                style={{ backgroundColor: '#FEF3C7', color: '#B45309' }}
+              >
+                共 {issueDistributionChartData.length} 位成员
+              </span>
+            </div>
+
+            <div style={{ width: '100%', height: issueDistributionChartHeight }}>
+              <ResponsiveContainer>
+                <BarChart
+                  data={issueDistributionChartData}
+                  layout="vertical"
+                  margin={{ top: 4, right: 24, left: 12, bottom: 4 }}
+                  barCategoryGap={10}
+                >
+                  <CartesianGrid strokeDasharray="3 3" stroke="#F3E8D6" horizontal={false} />
+                  <XAxis type="number" tick={{ fill: '#6B7280', fontSize: 11 }} allowDecimals={false} />
+                  <YAxis
+                    type="category"
+                    dataKey="username"
+                    width={88}
+                    tick={{ fill: '#374151', fontSize: 12 }}
+                  />
+                  <Tooltip
+                    cursor={{ fill: '#FFF7ED' }}
+                    content={renderIssueDistributionTooltip}
+                  />
+                  <Bar dataKey="问题单总数" fill="#D97706" radius={[0, 6, 6, 0]}>
+                    <LabelList
+                      dataKey="问题单总数"
+                      position="right"
+                      offset={8}
+                      style={{ fill: '#92400E', fontSize: 12, fontWeight: 700 }}
+                    />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="flex-1 overflow-auto px-6 py-5" style={{ background: 'linear-gradient(180deg, #FFFDF9 0%, #FFFFFF 18%)' }}>
-        {filteredUsers.length === 0 ? (
-          <div className="text-center py-16 text-sm" style={{ color: '#9CA3AF' }}>
-            当前筛选条件下暂无 JIRA 问题单
+      <div className="px-6 py-5">
+        {!hasAnyVisibleIssues && (
+          <div className="mb-4 rounded-xl border px-4 py-3 text-sm" style={{ borderColor: '#FDE68A', backgroundColor: '#FFF7ED', color: '#B45309' }}>
+            当前筛选条件下暂无匹配的问题单，已保留所有成员卡片和 0 值统计，方便继续切换筛选查看。
           </div>
-        ) : (
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            {filteredUsers.map(user => {
-              const userPanelKey = String(user.userId);
-              const isExpanded = expandedUserKey === userPanelKey;
-              return (
-                <div key={user.userId} className="rounded-2xl border overflow-hidden shadow-sm" style={{ borderColor: '#F1E3CF', backgroundColor: '#FFFFFF' }}>
-                  <button
-                    type="button"
-                    onClick={() => setExpandedUserKey(isExpanded ? null : userPanelKey)}
-                    className="w-full px-4 py-4 text-left"
-                    style={{ background: 'linear-gradient(135deg, #FFFFFF 0%, #FFF7ED 100%)' }}
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px]" style={{ color: '#64748B' }}>{isExpanded ? '▼' : '▶'}</span>
-                          <span className="text-base font-bold" style={{ color: '#1F2937' }}>{user.username}</span>
-                        </div>
-                        <div className="text-xs mt-1" style={{ color: '#7C6F64' }}>
-                          当前可见 {user.filteredIssues.length} 条 · 未完成 {user.filteredOpen} · 已完成 {user.filteredDone}
-                        </div>
+        )}
+
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+          {filteredUsers.map(user => {
+            const userPanelKey = String(user.userId);
+            const isExpanded = expandedUserKey === userPanelKey;
+            return (
+              <div key={user.userId} className="rounded-2xl border overflow-hidden shadow-sm" style={{ borderColor: '#F1E3CF', backgroundColor: '#FFFFFF' }}>
+                <button
+                  type="button"
+                  onClick={() => setExpandedUserKey(isExpanded ? null : userPanelKey)}
+                  className="w-full px-4 py-4 text-left"
+                  style={{ background: 'linear-gradient(135deg, #FFFFFF 0%, #FFF7ED 100%)' }}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px]" style={{ color: '#64748B' }}>{isExpanded ? '▼' : '▶'}</span>
+                        <span className="text-base font-bold" style={{ color: '#1F2937' }}>{user.username}</span>
                       </div>
-                      <div className="flex flex-wrap justify-end gap-2">
-                        <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEF3C7', color: '#B45309' }}>未完成 {user.filteredOpen}</span>
-                        <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#DCFCE7', color: '#166534' }}>已完成 {user.filteredDone}</span>
-                        <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEE2E2', color: '#B91C1C' }}>高优先级 {user.filteredIssues.filter(issue => ['high', 'highest'].includes(issue.priority.toLowerCase())).length}</span>
+                      <div className="text-xs mt-1" style={{ color: '#7C6F64' }}>
+                        当前可见 {user.filteredIssues.length} 条 · 未完成 {user.filteredOpen} · 已完成 {user.filteredDone}
                       </div>
                     </div>
-                  </button>
+                    <div className="flex flex-wrap justify-end gap-2">
+                      <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEF3C7', color: '#B45309' }}>未完成 {user.filteredOpen}</span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#DCFCE7', color: '#166534' }}>已完成 {user.filteredDone}</span>
+                      <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FEE2E2', color: '#B91C1C' }}>高优先级 {user.filteredIssues.filter(issue => ['high', 'highest'].includes(issue.priority.toLowerCase())).length}</span>
+                    </div>
+                  </div>
+                </button>
 
-                  {isExpanded && (
-                    <div className="px-4 py-3 space-y-2 max-h-[520px] overflow-auto border-t" style={{ borderColor: '#F5E6D3' }}>
-                      {user.filteredIssues
+                {isExpanded && (
+                  <div className="px-4 py-3 space-y-2 border-t max-h-[520px] overflow-auto" style={{ borderColor: '#F5E6D3' }}>
+                    {user.filteredIssues.length === 0 ? (
+                      <div className="rounded-xl border px-4 py-6 text-sm text-center" style={{ borderColor: '#F3E8D6', backgroundColor: '#FFFBF5', color: '#9CA3AF' }}>
+                        当前筛选条件下，该成员暂无匹配的问题单
+                      </div>
+                    ) : (
+                      user.filteredIssues
                         .sort((a, b) => {
                           if (Number(a.isDone) !== Number(b.isDone)) return Number(a.isDone) - Number(b.isDone);
                           return (b.updated || '').localeCompare(a.updated || '');
@@ -6518,14 +6623,14 @@ function JiraBoardView({
                               </div>
                             </div>
                           );
-                        })}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
+                        })
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     </div>
   );
