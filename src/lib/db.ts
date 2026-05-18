@@ -279,9 +279,30 @@ function initializeDatabase(db: Database.Database) {
         resolver_id INTEGER,
         resolver_name TEXT,
         resolve_note TEXT DEFAULT '',
+        workflow_status TEXT DEFAULT 'processing',
+        current_handler_id INTEGER,
+        current_handler_name TEXT,
+        current_round INTEGER DEFAULT 1,
+        closed_at TEXT,
         resolved_at TEXT,
         created_at TEXT DEFAULT (datetime('now', 'localtime')),
         updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+      )
+    `);
+  } catch { /* table already exists */ }
+
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS bug_step_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        bug_id INTEGER NOT NULL REFERENCES bugs(id) ON DELETE CASCADE,
+        step_type TEXT NOT NULL,
+        action_type TEXT NOT NULL,
+        round INTEGER DEFAULT 1,
+        actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        actor_name TEXT NOT NULL,
+        content TEXT DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now', 'localtime'))
       )
     `);
   } catch { /* table already exists */ }
@@ -297,6 +318,26 @@ function initializeDatabase(db: Database.Database) {
 
   try {
     db.exec(`ALTER TABLE bugs ADD COLUMN resolve_note TEXT DEFAULT ''`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE bugs ADD COLUMN workflow_status TEXT DEFAULT 'processing'`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE bugs ADD COLUMN current_handler_id INTEGER`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE bugs ADD COLUMN current_handler_name TEXT`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE bugs ADD COLUMN current_round INTEGER DEFAULT 1`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE bugs ADD COLUMN closed_at TEXT`);
   } catch { /* column already exists */ }
 
   try {
@@ -318,7 +359,63 @@ function initializeDatabase(db: Database.Database) {
         WHERE resolution_note IS NOT NULL AND resolution_note != ''
       `);
     }
+
+    if (bugColumnNames.has('workflow_status')) {
+      db.exec(`
+        UPDATE bugs
+        SET workflow_status = CASE
+          WHEN status = 'resolved' THEN 'closed'
+          WHEN workflow_status IS NULL OR workflow_status = '' THEN 'processing'
+          ELSE workflow_status
+        END
+      `);
+    }
+
+    if (bugColumnNames.has('current_round')) {
+      db.exec(`
+        UPDATE bugs
+        SET current_round = 1
+        WHERE current_round IS NULL OR current_round <= 0
+      `);
+    }
+
+    if (bugColumnNames.has('current_handler_name') && bugColumnNames.has('workflow_status')) {
+      db.exec(`
+        UPDATE bugs
+        SET current_handler_name = CASE
+          WHEN workflow_status = 'processing' THEN '王光涛'
+          WHEN workflow_status = 'regression' THEN reporter_name
+          ELSE NULL
+        END
+        WHERE current_handler_name IS NULL OR current_handler_name = ''
+      `);
+    }
+
+    if (bugColumnNames.has('current_handler_id') && bugColumnNames.has('workflow_status')) {
+      db.exec(`
+        UPDATE bugs
+        SET current_handler_id = CASE
+          WHEN workflow_status = 'regression' THEN reporter_id
+          ELSE current_handler_id
+        END
+        WHERE workflow_status = 'regression' AND (current_handler_id IS NULL OR current_handler_id = 0)
+      `);
+    }
+
+    if (bugColumnNames.has('closed_at')) {
+      db.exec(`
+        UPDATE bugs
+        SET closed_at = resolved_at
+        WHERE workflow_status = 'closed' AND closed_at IS NULL AND resolved_at IS NOT NULL
+      `);
+    }
   } catch { /* ignore migration errors */ }
+
+  try {
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_bugs_workflow_status_created ON bugs(workflow_status, created_at DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_bugs_current_handler ON bugs(current_handler_name, workflow_status, updated_at DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_bug_step_logs_bug_created ON bug_step_logs(bug_id, created_at ASC)`);
+  } catch { /* ignore index errors */ }
 
   // Initialize default users if not exists
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get() as { count: number };
