@@ -144,6 +144,7 @@ interface KanbanModuleStat {
   key: string;
   moduleId: number;
   moduleName: string;
+  moduleSortOrder: number;
   total: number;
   completed: number;
   passed: number;
@@ -160,6 +161,7 @@ interface KanbanCaseStat {
   caseName: string;
   moduleId: number;
   moduleName: string;
+  moduleSortOrder: number;
   testerId: number;
   testerName: string;
   feature: string;
@@ -168,6 +170,7 @@ interface KanbanCaseStat {
   priority: string;
   testResult: string | null;
   jiraLink: string;
+  caseSortOrder: number;
 }
 
 interface KanbanProjectStat {
@@ -5700,6 +5703,19 @@ function ProjectExecutionSummary({
     return { label: '未完成', color: '#64748B', backgroundColor: '#F1F5F9' };
   };
 
+  const getCasePriorityMeta = (priority: string) => {
+    if (priority === 'High') {
+      return { label: 'High', color: '#DC2626', backgroundColor: '#FEF2F2', borderColor: '#FCA5A5' };
+    }
+    if (priority === 'Middle') {
+      return { label: 'Middle', color: '#D97706', backgroundColor: '#FFFBEB', borderColor: '#FCD34D' };
+    }
+    if (priority === 'Low') {
+      return { label: 'Low', color: '#2563EB', backgroundColor: '#EFF6FF', borderColor: '#93C5FD' };
+    }
+    return { label: priority || 'Unset', color: '#64748B', backgroundColor: '#F8FAFC', borderColor: '#E2E8F0' };
+  };
+
   const getJiraPriorityMeta = (priority: string) => {
     const normalized = priority.trim().toLowerCase();
     if (normalized === 'highest') return { label: priority, color: '#FFFFFF', backgroundColor: '#991B1B' };
@@ -5753,9 +5769,9 @@ function ProjectExecutionSummary({
     return selectedProject.cases
       .filter(caseItem => caseItem.testerId === tester.userId && caseItem.moduleId === moduleStat.moduleId)
       .sort((a, b) => {
-        const left = `${a.caseNo || ''} ${a.caseName || ''}`;
-        const right = `${b.caseNo || ''} ${b.caseName || ''}`;
-        return left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' });
+        if (a.moduleSortOrder !== b.moduleSortOrder) return a.moduleSortOrder - b.moduleSortOrder;
+        if (a.caseSortOrder !== b.caseSortOrder) return a.caseSortOrder - b.caseSortOrder;
+        return a.id - b.id;
       });
   };
 
@@ -6120,11 +6136,32 @@ function ProjectExecutionSummary({
                                 <div className="mt-3 border-t pt-2 space-y-1.5" style={{ borderColor: '#E2E8F0' }}>
                                   {moduleCases.length > 0 ? moduleCases.map(caseItem => {
                                     const statusMeta = getCaseStatusMeta(caseItem.testResult);
+                                    const priorityMeta = getCasePriorityMeta(caseItem.priority);
                                     const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
                                     return (
                                       <div key={caseItem.id} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
                                         <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>{statusMeta.label}</span>
                                         <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>{caseTitle}</span>
+                                        <span
+                                          className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border flex-shrink-0"
+                                          style={{
+                                            color: priorityMeta.color,
+                                            backgroundColor: priorityMeta.backgroundColor,
+                                            borderColor: priorityMeta.borderColor,
+                                          }}
+                                          title={`优先级：${caseItem.priority || '未设置'}`}
+                                        >
+                                          {caseItem.priority === 'High' && (
+                                            <svg width="12" height="12" viewBox="0 0 16 16" fill="#DC2626"><path d="M8 2l5 5H3l5-5z"/><rect x="6" y="7" width="4" height="6" rx="0.5"/></svg>
+                                          )}
+                                          {caseItem.priority === 'Middle' && (
+                                            <svg width="12" height="12" viewBox="0 0 16 16" fill="#D97706"><rect x="2" y="6" width="12" height="4" rx="1"/></svg>
+                                          )}
+                                          {caseItem.priority === 'Low' && (
+                                            <svg width="12" height="12" viewBox="0 0 16 16" fill="#2563EB"><path d="M8 14l5-5H3l5 5z"/><rect x="6" y="3" width="4" height="6" rx="0.5"/></svg>
+                                          )}
+                                          {priorityMeta.label}
+                                        </span>
                                         <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
                                           详情
                                         </button>

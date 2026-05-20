@@ -13,6 +13,7 @@ type ModuleStat = {
   key: string;
   moduleId: number;
   moduleName: string;
+  moduleSortOrder: number;
   total: number;
   completed: number;
   passed: number;
@@ -115,7 +116,7 @@ export async function GET(request: NextRequest) {
         FROM modules
         WHERE project_id = ?
         ORDER BY sort_order, id
-      `).all(project.id) as { id: number; name: string }[];
+      `).all(project.id) as { id: number; name: string; sort_order: number | null }[];
 
       let projectTotal = 0;
       let projectCompleted = 0;
@@ -129,6 +130,7 @@ export async function GET(request: NextRequest) {
         username: string;
         moduleId: number;
         moduleName: string;
+        moduleSortOrder: number;
         total: number;
         completed: number;
         passed: number;
@@ -141,6 +143,7 @@ export async function GET(request: NextRequest) {
         caseName: string;
         moduleId: number;
         moduleName: string;
+        moduleSortOrder: number;
         testerId: number;
         testerName: string;
         feature: string;
@@ -149,12 +152,13 @@ export async function GET(request: NextRequest) {
         priority: string;
         testResult: string | null;
         jiraLink: string;
+        caseSortOrder: number;
       }> = [];
 
       for (const mod of modules) {
         const moduleTester = assignmentMap.get(`module-${mod.id}`);
         const moduleCases = db.prepare(`
-          SELECT id, case_no, case_name, feature, trait, test_category, priority, test_result, jira_link
+          SELECT id, case_no, case_name, feature, trait, test_category, priority, test_result, jira_link, sort_order
           FROM cases
           WHERE module_id = ?
           ORDER BY sort_order, id
@@ -168,6 +172,7 @@ export async function GET(request: NextRequest) {
           priority: string;
           test_result: string | null;
           jira_link: string;
+          sort_order: number | null;
         }>;
 
         const filteredCases = priorityMode === 'high'
@@ -224,6 +229,7 @@ export async function GET(request: NextRequest) {
               username: resolvedTester.testerName,
               moduleId: mod.id,
               moduleName: mod.name,
+              moduleSortOrder: mod.sort_order ?? 0,
               total: 0,
               completed: 0,
               passed: 0,
@@ -245,6 +251,7 @@ export async function GET(request: NextRequest) {
             caseName: caseItem.case_name,
             moduleId: mod.id,
             moduleName: mod.name,
+            moduleSortOrder: mod.sort_order ?? 0,
             testerId: resolvedTester.userId,
             testerName: resolvedTester.testerName,
             feature: normalizeText(caseItem.feature || caseItem.test_category, '未填写功能'),
@@ -253,6 +260,7 @@ export async function GET(request: NextRequest) {
             priority: caseItem.priority || '',
             testResult: caseItem.test_result,
             jiraLink: caseItem.jira_link || '',
+            caseSortOrder: caseItem.sort_order ?? 0,
           });
         }
       }
@@ -264,6 +272,7 @@ export async function GET(request: NextRequest) {
           key: `${moduleStats.moduleId}`,
           moduleId: moduleStats.moduleId,
           moduleName: moduleStats.moduleName,
+          moduleSortOrder: moduleStats.moduleSortOrder,
           total: moduleStats.total,
           completed: moduleStats.completed,
           passed: moduleStats.passed,
@@ -280,7 +289,11 @@ export async function GET(request: NextRequest) {
           ...tester,
           completionRate: roundRate(tester.completed, tester.total),
           passRate: roundRate(tester.passed, tester.completed),
-          modules: tester.modules.sort((a, b) => compareNames(a.moduleName, b.moduleName)),
+          modules: tester.modules.sort((a, b) => {
+            if (a.moduleSortOrder !== b.moduleSortOrder) return a.moduleSortOrder - b.moduleSortOrder;
+            if (a.moduleId !== b.moduleId) return a.moduleId - b.moduleId;
+            return compareNames(a.moduleName, b.moduleName);
+          }),
         }))
         .sort((a, b) => compareNames(a.username, b.username));
 
