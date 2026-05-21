@@ -1,8 +1,10 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
+import { getWorkspaceRoot } from '@/lib/runtime';
 
-const DB_DIR = path.join(process.env.COZE_WORKSPACE_PATH || process.cwd(), 'data');
+const WORKSPACE_ROOT = getWorkspaceRoot();
+const DB_DIR = path.join(WORKSPACE_ROOT, 'data');
 const DB_PATH = path.join(DB_DIR, 'platform.db');
 
 if (!fs.existsSync(DB_DIR)) {
@@ -430,7 +432,7 @@ function initializeDatabase(db: Database.Database) {
 
     // Initialize default storage path
     const insertSetting = db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)');
-    insertSetting.run('storage_path', path.join(process.env.COZE_WORKSPACE_PATH || process.cwd(), 'uploads'));
+    insertSetting.run('storage_path', path.join(WORKSPACE_ROOT, 'uploads'));
   }
 }
 
@@ -451,7 +453,7 @@ export function verifyPassword(password: string, stored: string): boolean {
 export function getStoragePath(): string {
   const db = getDb();
   const row = db.prepare("SELECT value FROM settings WHERE key = 'storage_path'").get() as { value: string } | undefined;
-  const storagePath = row?.value || path.join(process.env.COZE_WORKSPACE_PATH || process.cwd(), 'uploads');
+  const storagePath = row?.value || path.join(WORKSPACE_ROOT, 'uploads');
   if (!fs.existsSync(storagePath)) {
     fs.mkdirSync(storagePath, { recursive: true });
   }

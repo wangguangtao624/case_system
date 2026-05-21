@@ -1,11 +1,11 @@
 #!/bin/bash
 set -Eeuo pipefail
 
-COZE_WORKSPACE_PATH="${COZE_WORKSPACE_PATH:-$(pwd)}"
+PROJECT_ROOT="${APP_WORKSPACE_PATH:-${COZE_WORKSPACE_PATH:-$(pwd)}}"
 
 PORT=5000
 DEPLOY_RUN_PORT="${DEPLOY_RUN_PORT:-$PORT}"
-COZE_PROJECT_ENV="${COZE_PROJECT_ENV:-PROD}"
+APP_RUNTIME_ENV="${APP_RUNTIME_ENV:-${COZE_PROJECT_ENV:-PROD}}"
 NODE_ENV="${NODE_ENV:-production}"
 
 resolve_node_bin() {
@@ -30,12 +30,12 @@ resolve_node_bin() {
 
 
 start_service() {
-    cd "${COZE_WORKSPACE_PATH}"
+    cd "${PROJECT_ROOT}"
     echo "Starting HTTP service on port ${DEPLOY_RUN_PORT} for deploy..."
     local node_bin
     node_bin="$(resolve_node_bin)"
     exec env PORT="${DEPLOY_RUN_PORT}" \
-    COZE_PROJECT_ENV="${COZE_PROJECT_ENV}" \
+    APP_RUNTIME_ENV="${APP_RUNTIME_ENV}" \
     NODE_ENV="${NODE_ENV}" \
     "${node_bin}" dist/server.js
 }

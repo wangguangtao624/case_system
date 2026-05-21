@@ -3,12 +3,13 @@ import { cookies } from 'next/headers';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
+import { resolveWorkspacePath } from '@/lib/runtime';
 
 function getJwtSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
   if (secret) return new TextEncoder().encode(secret);
 
-  const secretPath = path.join(process.env.COZE_WORKSPACE_PATH || process.cwd(), 'data', '.jwt_secret');
+  const secretPath = resolveWorkspacePath('data', '.jwt_secret');
   if (fs.existsSync(secretPath)) {
     const stored = fs.readFileSync(secretPath, 'utf-8').trim();
     if (stored) return new TextEncoder().encode(stored);
