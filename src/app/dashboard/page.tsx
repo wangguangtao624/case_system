@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef, Fragment } from 'react';
+import { useState, useEffect, useCallback, useRef, Fragment, useMemo, startTransition } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 
@@ -302,6 +302,16 @@ interface BugItem {
   created_at: string;
   updated_at: string;
   step_logs: BugStepLog[];
+}
+
+interface BugViewModel extends BugItem {
+  submitPreviewText: string;
+  submitLogs: BugStepLog[];
+  processLogs: BugStepLog[];
+  regressionLogs: BugStepLog[];
+  canProcess: boolean;
+  canRegression: boolean;
+  isActionable: boolean;
 }
 
 // ============ Main Dashboard ============
@@ -7753,6 +7763,7 @@ function BugManagementPanel({
   const [filter, setFilter] = useState<'pending' | 'mine' | 'closed' | 'all'>('pending');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [expandedBugId, setExpandedBugId] = useState<number | null>(null);
+  const [expandedSubmitDetails, setExpandedSubmitDetails] = useState<Record<number, boolean>>({});
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [submittingAction, setSubmittingAction] = useState<number | null>(null);
   const [fixerUsername, setFixerUsername] = useState('王光涛');
@@ -7817,8 +7828,6 @@ function BugManagementPanel({
     }
   };
 
-  if (!show) return null;
-
   const formatDateTime = (value?: string | null) => {
     if (!value) return '--';
     const date = new Date(value.replace(' ', 'T'));
@@ -7838,6 +7847,75 @@ function BugManagementPanel({
 
   const getStepLogs = (bug: BugItem, step: BugStepLog['step_type']) => bug.step_logs.filter(log => log.step_type === step);
 
+  const getPlainText = (html: string) => {
+    if (!html) return '';
+    return html
+      .replace(/<img[^>]*>/gi, ' [图片] ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  };
+
+  const getCurrentStepKey = (bug: BugItem): 'submit' | 'process' | 'regression' | 'done' => {
+    if (bug.workflow_status === 'processing') return 'process';
+    if (bug.workflow_status === 'regression') return 'regression';
+    return 'done';
+  };
+
+  const getFlowProgress = (bug: BugItem) => {
+    if (bug.workflow_status === 'closed') return 100;
+    if (bug.workflow_status === 'regression') return 66;
+    return 33;
+  };
+
+  const getFlowStepState = (bug: BugItem, step: 'submit' | 'process' | 'regression' | 'done'): 'completed' | 'current' | 'upcoming' => {
+    if (bug.workflow_status === 'closed') return 'completed';
+    if (bug.workflow_status === 'processing') {
+      if (step === 'submit') return 'completed';
+      if (step === 'process') return 'current';
+      return 'upcoming';
+    }
+    if (step === 'submit' || step === 'process') return 'completed';
+    if (step === 'regression') return 'current';
+    return 'upcoming';
+  };
+
+  const getActionableHint = (bug: BugItem) => {
+    if (bug.workflow_status === 'processing' && currentUser.username === fixerUsername) {
+      return `你有待处理的问题单，当前需要由你填写处理记录并提交给 ${bug.reporter_name} 回归。`;
+    }
+    if (bug.workflow_status === 'regression' && currentUser.id === bug.reporter_id) {
+      return `你有待回归的问题单，请在“回归问题单”区域填写验证结果。`;
+    }
+    return '';
+  };
+
+  const renderFlowPersonIcon = (accent: string, active: boolean, role: 'submit' | 'process' | 'regression' | 'done') => (
+    <div
+      className="relative flex items-center justify-center"
+      style={{
+        width: 54,
+        height: 54,
+        borderRadius: 999,
+        backgroundColor: active ? '#FFFFFF' : '#F8FAFC',
+        border: `2px solid ${accent}`,
+        boxShadow: active ? `0 0 0 10px ${accent}22, 0 12px 24px ${accent}33` : `0 8px 18px ${accent}18`,
+      }}
+    >
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={accent} strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="7.5" r="3.2" />
+        <path d="M6.6 19c1.2-3.1 3.3-4.7 5.4-4.7S16.2 15.9 17.4 19" />
+        {role === 'submit' && <path d="M18.5 5.5v4m-2-2h4" />}
+        {role === 'process' && <path d="M17.4 16.8l1.8 1.8 2.2-2.4" />}
+        {role === 'regression' && <path d="M17.2 9.5h4m-2-2v4" />}
+        {role === 'done' && <path d="M17 9.8l1.7 1.7 2.6-3" />}
+      </svg>
+    </div>
+  );
+
   const renderHtml = (html: string, emptyText: string, tone: 'default' | 'success' | 'danger' = 'default') => (
     html ? (
       <div
@@ -7856,19 +7934,40 @@ function BugManagementPanel({
     )
   );
 
-  const visibleBugs = bugs.filter(bug => {
+  const bugViewModels = useMemo<BugViewModel[]>(() => bugs.map(bug => {
+    const submitLogs = getStepLogs(bug, 'submit');
+    const processLogs = getStepLogs(bug, 'process');
+    const regressionLogs = getStepLogs(bug, 'regression');
+    const canProcess = bug.workflow_status === 'processing' && currentUser.username === fixerUsername;
+    const canRegression = bug.workflow_status === 'regression' && currentUser.id === bug.reporter_id;
+    const submitPreview = getPlainText(bug.description);
+    return {
+      ...bug,
+      submitLogs,
+      processLogs,
+      regressionLogs,
+      canProcess,
+      canRegression,
+      isActionable: canProcess || canRegression,
+      submitPreviewText: submitPreview.length > 140 ? `${submitPreview.slice(0, 140)}...` : submitPreview,
+    };
+  }), [bugs, currentUser.id, currentUser.username, fixerUsername]);
+
+  const visibleBugs = useMemo(() => bugViewModels.filter(bug => {
     if (filter === 'all') return true;
     if (filter === 'closed') return bug.workflow_status === 'closed';
     if (filter === 'mine') return bug.reporter_name === currentUser.username || bug.current_handler_name === currentUser.username;
     return bug.workflow_status !== 'closed';
-  });
+  }), [bugViewModels, currentUser.username, filter]);
 
-  const counts = {
+  const counts = useMemo(() => ({
     pending: bugs.filter(bug => bug.workflow_status !== 'closed').length,
     mine: bugs.filter(bug => bug.reporter_name === currentUser.username || bug.current_handler_name === currentUser.username).length,
     closed: bugs.filter(bug => bug.workflow_status === 'closed').length,
     all: bugs.length,
-  };
+  }), [bugs, currentUser.username]);
+
+  if (!show) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.42)' }}>
@@ -7937,28 +8036,35 @@ function BugManagementPanel({
               {visibleBugs.map(bug => {
                 const meta = getStatusMeta(bug);
                 const isExpanded = expandedBugId === bug.id;
-                const canProcess = bug.workflow_status === 'processing' && currentUser.username === fixerUsername;
-                const canRegression = bug.workflow_status === 'regression' && currentUser.id === bug.reporter_id;
-                const submitLogs = getStepLogs(bug, 'submit');
-                const processLogs = getStepLogs(bug, 'process');
-                const regressionLogs = getStepLogs(bug, 'regression');
+                const canProcess = bug.canProcess;
+                const canRegression = bug.canRegression;
+                const isActionable = bug.isActionable;
+                const actionHint = getActionableHint(bug);
+                const submitLogs = bug.submitLogs;
+                const processLogs = bug.processLogs;
+                const regressionLogs = bug.regressionLogs;
+                const currentStep = getCurrentStepKey(bug);
+                const flowProgress = getFlowProgress(bug);
+                const submitPreviewText = bug.submitPreviewText;
+                const showSubmitDetail = expandedSubmitDetails[bug.id] ?? true;
 
                 return (
                   <div
                     key={bug.id}
                     className="rounded-2xl border overflow-hidden shadow-sm"
                     style={{
-                      borderColor: bug.workflow_status === 'closed' ? '#D1D5DB' : '#F1E3CF',
+                      borderColor: isActionable ? '#FCA5A5' : bug.workflow_status === 'closed' ? '#D1D5DB' : '#F1E3CF',
                       backgroundColor: bug.workflow_status === 'closed' ? '#F9FAFB' : '#FFFFFF',
+                      boxShadow: isActionable ? '0 18px 38px rgba(239, 68, 68, 0.12)' : '0 8px 24px rgba(15, 23, 42, 0.05)',
                     }}
                   >
                     <div
                       className="px-4 py-4 flex items-start justify-between gap-4"
-                      style={{ background: bug.workflow_status === 'closed' ? 'linear-gradient(135deg, #F9FAFB 0%, #F3F4F6 100%)' : 'linear-gradient(135deg, #FFFFFF 0%, #FFF7ED 100%)' }}
+                      style={{ background: isActionable ? 'linear-gradient(135deg, #FFF1F2 0%, #FFFFFF 56%, #FFF7ED 100%)' : bug.workflow_status === 'closed' ? 'linear-gradient(135deg, #F9FAFB 0%, #F3F4F6 100%)' : 'linear-gradient(135deg, #FFFFFF 0%, #FFF7ED 100%)' }}
                     >
                       <button
                         type="button"
-                        onClick={() => setExpandedBugId(isExpanded ? null : bug.id)}
+                        onClick={() => startTransition(() => setExpandedBugId(isExpanded ? null : bug.id))}
                         className="min-w-0 flex-1 text-left"
                       >
                         <div className="min-w-0 flex-1">
@@ -7978,10 +8084,20 @@ function BugManagementPanel({
                                 当前到 {bug.current_handler_name}
                               </span>
                             )}
+                            {isActionable && (
+                              <span className="px-2 py-0.5 text-[11px] rounded-full font-semibold" style={{ backgroundColor: '#FEE2E2', color: '#B91C1C', border: '1px solid #FCA5A5' }}>
+                                需要你处理
+                              </span>
+                            )}
                           </div>
                           <div className="text-base font-bold mt-2" style={{ color: bug.workflow_status === 'closed' ? '#6B7280' : '#1F2937' }}>
                             {bug.title}
                           </div>
+                          {submitPreviewText && (
+                            <div className="mt-2 text-sm leading-6" style={{ color: '#6B7280' }}>
+                              {submitPreviewText}
+                            </div>
+                          )}
                           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-xs" style={{ color: '#6B7280' }}>
                             <span>提单人：{bug.reporter_name}</span>
                             <span>处理人：{fixerUsername}</span>
@@ -8005,6 +8121,22 @@ function BugManagementPanel({
 
                     {isExpanded && (
                       <div className="px-4 pb-4 space-y-4">
+                        {isActionable && (
+                          <div
+                            className="rounded-2xl border px-4 py-3 flex flex-wrap items-center gap-3"
+                            style={{ borderColor: '#FCA5A5', backgroundColor: '#FEF2F2' }}
+                          >
+                            <span
+                              className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold"
+                              style={{ backgroundColor: '#DC2626', color: '#FFFFFF' }}
+                            >
+                              红色提醒
+                            </span>
+                            <span className="text-sm" style={{ color: '#991B1B' }}>
+                              {actionHint}
+                            </span>
+                          </div>
+                        )}
                         <div className="rounded-2xl border px-5 py-5" style={{ borderColor: '#F1E3CF', background: 'linear-gradient(135deg, #FFFFFF 0%, #FFF8F1 52%, #FFFBF5 100%)' }}>
                           <div className="flex items-start justify-between gap-3 mb-5">
                             <div>
@@ -8019,8 +8151,16 @@ function BugManagementPanel({
                           </div>
 
                           <div className="overflow-x-auto">
-                            <div className="min-w-[1120px] relative">
-                              <div className="absolute left-[10%] right-[10%] top-[52px] h-[4px] rounded-full" style={{ background: 'linear-gradient(90deg, #F59E0B 0%, #F59E0B 48%, #3B82F6 78%, #9CA3AF 100%)' }} />
+                            <div className="min-w-[980px] relative">
+                              <div className="absolute left-[11%] right-[11%] top-[28px] h-[6px] rounded-full" style={{ backgroundColor: '#D1D5DB', opacity: 0.9 }} />
+                              <div
+                                className="absolute left-[11%] top-[28px] h-[6px] rounded-full transition-all duration-300"
+                                style={{
+                                  width: `${flowProgress}%`,
+                                  background: 'linear-gradient(90deg, #16A34A 0%, #22C55E 100%)',
+                                  boxShadow: flowProgress > 0 ? '0 0 0 1px rgba(34, 197, 94, 0.08), 0 6px 16px rgba(34, 197, 94, 0.24)' : 'none',
+                                }}
+                              />
                               <div className="grid grid-cols-4 gap-6 relative">
                                 {[
                                   {
@@ -8029,8 +8169,6 @@ function BugManagementPanel({
                                     owner: bug.reporter_name,
                                     note: '任何人都可以提单',
                                     accent: '#F97316',
-                                    glow: '#FFEDD5',
-                                    active: false,
                                     statusText: '已发起',
                                   },
                                   {
@@ -8039,8 +8177,6 @@ function BugManagementPanel({
                                     owner: fixerUsername,
                                     note: '修复完成后提交回归',
                                     accent: '#D97706',
-                                    glow: '#FEF3C7',
-                                    active: bug.workflow_status === 'processing',
                                     statusText: bug.workflow_status === 'processing' ? '当前处理中' : '处理完成',
                                   },
                                   {
@@ -8049,54 +8185,45 @@ function BugManagementPanel({
                                     owner: bug.reporter_name,
                                     note: '回归失败会退回处理',
                                     accent: '#2563EB',
-                                    glow: '#DBEAFE',
-                                    active: bug.workflow_status === 'regression',
                                     statusText: bug.workflow_status === 'regression' ? '当前待回归' : bug.workflow_status === 'closed' ? '回归通过' : '等待回归',
                                   },
                                   {
                                     key: 'done',
                                     title: 'DONE',
                                     owner: bug.workflow_status === 'closed' ? '回归通过并关闭' : '等待最终结果',
-                                    note: bug.workflow_status === 'closed' ? '关闭后呈灰色留档' : '完成后自动归档到关闭态',
-                                    accent: '#6B7280',
-                                    glow: '#F3F4F6',
-                                    active: bug.workflow_status === 'closed',
+                                    note: bug.workflow_status === 'closed' ? '已完成并关闭' : '完成后自动归档到关闭态',
+                                    accent: '#16A34A',
                                     statusText: bug.workflow_status === 'closed' ? '已完成' : '未结束',
                                   },
-                                ].map(step => (
-                                  <div key={step.key} className="relative pt-2">
-                                    <div className="flex justify-center mb-3">
-                                      <div
-                                        className="w-11 h-11 rounded-full border-[3px] flex items-center justify-center text-sm font-bold"
-                                        style={{
-                                          borderColor: step.accent,
-                                          color: step.accent,
-                                          backgroundColor: step.active ? '#FFFFFF' : step.glow,
-                                          boxShadow: step.active ? `0 0 0 8px ${step.glow}` : 'none',
-                                        }}
-                                      >
-                                        {step.key === 'done' ? '✓' : step.key === 'submit' ? '1' : step.key === 'process' ? '2' : '3'}
-                                      </div>
+                                ].map(step => {
+                                  const stepState = getFlowStepState(bug, step.key as 'submit' | 'process' | 'regression' | 'done');
+                                  const isCompleted = stepState === 'completed';
+                                  const isCurrent = stepState === 'current' || (step.key === 'done' && currentStep === 'done');
+                                  const iconAccent = isCompleted ? '#16A34A' : isCurrent ? step.accent : '#9CA3AF';
+                                  const chipBackground = isCompleted ? '#DCFCE7' : isCurrent ? `${step.accent}18` : '#F3F4F6';
+                                  const chipColor = isCompleted ? '#166534' : isCurrent ? step.accent : '#6B7280';
+                                  const titleColor = isCompleted ? '#166534' : isCurrent ? step.accent : '#6B7280';
+                                  const noteColor = isCurrent ? '#374151' : '#6B7280';
+                                  return (
+                                  <div key={step.key} className="relative pt-2 text-center">
+                                    <div className="flex justify-center mb-4">
+                                      {renderFlowPersonIcon(iconAccent, isCurrent, step.key as 'submit' | 'process' | 'regression' | 'done')}
                                     </div>
                                     <div
-                                      className="rounded-2xl border p-4 min-h-[170px]"
+                                      className="inline-flex items-center justify-center px-2.5 py-1 rounded-full text-[11px] font-semibold mb-3"
                                       style={{
-                                        borderColor: step.active ? step.accent : '#E5E7EB',
-                                        backgroundColor: step.active ? '#FFFFFF' : '#FFFFFF',
-                                        boxShadow: step.active ? `0 18px 40px ${step.glow}` : '0 8px 18px rgba(15, 23, 42, 0.04)',
+                                        backgroundColor: isCurrent ? step.accent : chipBackground,
+                                        color: isCurrent ? '#FFFFFF' : chipColor,
+                                        boxShadow: isCurrent ? `0 10px 24px ${step.accent}30` : 'none',
                                       }}
                                     >
-                                      <div className="flex items-center justify-between gap-2">
-                                        <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>{step.title}</div>
-                                        <span className="text-[11px] px-2 py-1 rounded-full" style={{ backgroundColor: step.glow, color: step.accent }}>
-                                          {step.statusText}
-                                        </span>
-                                      </div>
-                                      <div className="text-lg font-bold mt-3 break-words" style={{ color: '#111827' }}>{step.owner}</div>
-                                      <div className="text-xs mt-3 leading-6" style={{ color: '#6B7280' }}>{step.note}</div>
+                                      {step.statusText}
                                     </div>
+                                    <div className="text-sm font-semibold" style={{ color: titleColor }}>{step.title}</div>
+                                    <div className="text-base font-bold mt-2 break-words" style={{ color: '#111827' }}>{step.owner}</div>
+                                    <div className="text-xs mt-2 leading-6" style={{ color: noteColor }}>{step.note}</div>
                                   </div>
-                                ))}
+                                )})}
                               </div>
 
                               {bug.current_round > 1 && (
@@ -8120,125 +8247,190 @@ function BugManagementPanel({
                           )}
                         </div>
 
-                        <div className="grid grid-cols-1 xl:grid-cols-3 lg:grid-cols-2 gap-4">
-                          <div className="rounded-xl border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF', minHeight: '360px' }}>
-                            <div className="flex items-center justify-between mb-3">
-                              <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>提交问题单</div>
-                              <div className="text-xs" style={{ color: '#6B7280' }}>{bug.reporter_name}</div>
-                            </div>
-                            {renderHtml(bug.description, '提单人未填写详细说明')}
-                            {submitLogs.length > 0 && (
-                              <div className="mt-3 pt-3 border-t space-y-2" style={{ borderColor: '#F3F4F6' }}>
-                                {submitLogs.map(log => (
-                                  <div key={log.id} className="text-xs" style={{ color: '#9CA3AF' }}>
-                                    {log.actor_name} · {formatDateTime(log.created_at)}
+                        <div className="space-y-4">
+                          <div className="rounded-2xl border overflow-hidden" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF' }}>
+                            <button
+                              type="button"
+                              onClick={() => startTransition(() => setExpandedSubmitDetails(prev => ({ ...prev, [bug.id]: !showSubmitDetail })))}
+                              className="w-full px-4 py-4 text-left"
+                              style={{ background: showSubmitDetail ? 'linear-gradient(135deg, #FFF7ED 0%, #FFFFFF 100%)' : '#FFFFFF' }}
+                            >
+                              <div className="flex flex-wrap items-start justify-between gap-3">
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>提交问题单</div>
+                                    <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#FFF1F2', color: '#BE123C' }}>
+                                      问题描述
+                                    </span>
                                   </div>
-                                ))}
+                                  <div className="text-xs mt-1" style={{ color: '#6B7280' }}>{bug.reporter_name} · {formatDateTime(bug.created_at)}</div>
+                                  <div className="text-sm mt-3 leading-7" style={{ color: '#374151' }}>
+                                    {submitPreviewText || '提单人未填写详细说明'}
+                                  </div>
+                                </div>
+                                <div className="flex items-center gap-3 flex-shrink-0">
+                                  {submitLogs.length > 0 && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full" style={{ backgroundColor: '#F3F4F6', color: '#6B7280' }}>
+                                      {submitLogs.length} 条记录
+                                    </span>
+                                  )}
+                                  <span className="text-xs font-semibold" style={{ color: '#D97706' }}>
+                                    {showSubmitDetail ? '收起详情' : '展开详情'}
+                                  </span>
+                                </div>
+                              </div>
+                            </button>
+                            {showSubmitDetail && (
+                              <div className="px-4 pb-4 border-t" style={{ borderColor: '#F3F4F6', contentVisibility: 'auto', containIntrinsicSize: '320px' }}>
+                                <div className="pt-4">
+                                  {renderHtml(bug.description, '提单人未填写详细说明')}
+                                </div>
+                                {submitLogs.length > 0 && (
+                                  <div className="mt-4 pt-3 border-t space-y-2" style={{ borderColor: '#F3F4F6' }}>
+                                    {submitLogs.map(log => (
+                                      <div key={log.id} className="text-xs" style={{ color: '#9CA3AF' }}>
+                                        {log.actor_name} · {formatDateTime(log.created_at)}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
                             )}
                           </div>
 
-                          <div className="rounded-xl border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF', minHeight: '360px' }}>
-                            <div className="flex items-center justify-between mb-3">
-                              <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>处理问题单</div>
-                              <div className="text-xs" style={{ color: '#6B7280' }}>{fixerUsername}</div>
-                            </div>
-                            <div className="space-y-3">
-                              {processLogs.length > 0 ? processLogs.map(log => (
-                                <div key={log.id} className="rounded-lg border p-3" style={{ borderColor: '#ECFCCB', backgroundColor: '#F7FEE7' }}>
-                                  <div className="text-xs mb-2" style={{ color: '#4D7C0F' }}>
-                                    第 {log.round} 轮处理 · {log.actor_name} · {formatDateTime(log.created_at)}
-                                  </div>
-                                  {renderHtml(log.content, '本轮处理未填写说明', 'success')}
+                          <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                            <div
+                              className="rounded-xl border p-4"
+                              style={{
+                                borderColor: canProcess ? '#FCA5A5' : '#E5E7EB',
+                                backgroundColor: canProcess ? '#FFFDFD' : '#FFFFFF',
+                                minHeight: '360px'
+                              }}
+                            >
+                              <div className="flex items-center justify-between mb-3">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>处理问题单</div>
+                                  {canProcess && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEE2E2', color: '#B91C1C' }}>
+                                      红色提醒：待你处理
+                                    </span>
+                                  )}
                                 </div>
-                              )) : (
-                                <div className="text-sm" style={{ color: '#9CA3AF' }}>暂未记录处理说明</div>
-                              )}
+                                <div className="text-xs" style={{ color: '#6B7280' }}>{fixerUsername}</div>
+                              </div>
+                              <div className="space-y-3">
+                                {processLogs.length > 0 ? processLogs.map(log => (
+                                  <div key={log.id} className="rounded-lg border p-3" style={{ borderColor: '#ECFCCB', backgroundColor: '#F7FEE7', contentVisibility: 'auto', containIntrinsicSize: '220px' }}>
+                                    <div className="text-xs mb-2" style={{ color: '#4D7C0F' }}>
+                                      第 {log.round} 轮处理 · {log.actor_name} · {formatDateTime(log.created_at)}
+                                    </div>
+                                    {renderHtml(log.content, '本轮处理未填写说明', 'success')}
+                                  </div>
+                                )) : (
+                                  <div className="text-sm" style={{ color: '#9CA3AF' }}>暂未记录处理说明</div>
+                                )}
 
-                              {canProcess && (
-                                <div className="rounded-lg border p-3" style={{ borderColor: '#BFDBFE', backgroundColor: '#F8FBFF' }}>
-                                  <div className="text-xs font-semibold mb-2" style={{ color: '#1D4ED8' }}>
-                                    当前轮到你处理，处理完成后会自动流转给 {bug.reporter_name} 回归
+                                {canProcess && (
+                                  <div className="space-y-3">
+                                    <div className="text-sm font-semibold" style={{ color: '#B91C1C' }}>
+                                      当前轮到你处理，处理完成后会自动流转给 {bug.reporter_name} 回归
+                                    </div>
+                                    <MiniRichTextEditor
+                                      value={drafts[bug.id] || ''}
+                                      onChange={(html) => setDrafts(prev => ({ ...prev, [bug.id]: html }))}
+                                      placeholder="记录修复方案、影响范围、验证截图等..."
+                                      minHeight={180}
+                                    />
+                                    <div className="mt-3 flex justify-end">
+                                      <button
+                                        type="button"
+                                        onClick={() => submitAction(bug.id, 'process')}
+                                        disabled={submittingAction === bug.id}
+                                        className="px-4 py-2 text-sm rounded text-white hover:opacity-90 disabled:opacity-50"
+                                        style={{ backgroundColor: '#16A34A' }}
+                                      >
+                                        {submittingAction === bug.id ? '提交中...' : '处理完成，提交回归'}
+                                      </button>
+                                    </div>
                                   </div>
-                                  <MiniRichTextEditor
-                                    value={drafts[bug.id] || ''}
-                                    onChange={(html) => setDrafts(prev => ({ ...prev, [bug.id]: html }))}
-                                    placeholder="记录修复方案、影响范围、验证截图等..."
-                                    minHeight={180}
-                                  />
-                                  <div className="mt-3 flex justify-end">
-                                    <button
-                                      type="button"
-                                      onClick={() => submitAction(bug.id, 'process')}
-                                      disabled={submittingAction === bug.id}
-                                      className="px-4 py-2 text-sm rounded text-white hover:opacity-90 disabled:opacity-50"
-                                      style={{ backgroundColor: '#16A34A' }}
-                                    >
-                                      {submittingAction === bug.id ? '提交中...' : '处理完成，提交回归'}
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
+                                )}
+                              </div>
                             </div>
-                          </div>
 
-                          <div className="rounded-xl border p-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FFFFFF', minHeight: '360px' }}>
-                            <div className="flex items-center justify-between mb-3">
-                              <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>回归问题单</div>
-                              <div className="text-xs" style={{ color: '#6B7280' }}>{bug.reporter_name}</div>
-                            </div>
-                            <div className="space-y-3">
-                              {regressionLogs.length > 0 ? regressionLogs.map(log => (
-                                <div
-                                  key={log.id}
-                                  className="rounded-lg border p-3"
-                                  style={{
-                                    borderColor: log.action_type === 'passed' ? '#BBF7D0' : '#FECACA',
-                                    backgroundColor: log.action_type === 'passed' ? '#F0FFF4' : '#FEF2F2',
-                                  }}
-                                >
-                                  <div className="text-xs mb-2" style={{ color: log.action_type === 'passed' ? '#166534' : '#B91C1C' }}>
-                                    第 {log.round} 轮回归 · {log.action_type === 'passed' ? '回归通过' : '回归失败'} · {log.actor_name} · {formatDateTime(log.created_at)}
-                                  </div>
-                                  {renderHtml(log.content, '本轮回归未填写说明', log.action_type === 'passed' ? 'success' : 'danger')}
+                            <div
+                              className="rounded-xl border p-4"
+                              style={{
+                                borderColor: canRegression ? '#FCA5A5' : '#E5E7EB',
+                                backgroundColor: canRegression ? '#FFFDFD' : '#FFFFFF',
+                                minHeight: '360px'
+                              }}
+                            >
+                              <div className="flex items-center justify-between mb-3">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>回归问题单</div>
+                                  {canRegression && (
+                                    <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEE2E2', color: '#B91C1C' }}>
+                                      红色提醒：待你回归
+                                    </span>
+                                  )}
                                 </div>
-                              )) : (
-                                <div className="text-sm" style={{ color: '#9CA3AF' }}>暂未记录回归说明</div>
-                              )}
+                                <div className="text-xs" style={{ color: '#6B7280' }}>{bug.reporter_name}</div>
+                              </div>
+                              <div className="space-y-3">
+                                {regressionLogs.length > 0 ? regressionLogs.map(log => (
+                                  <div
+                                    key={log.id}
+                                    className="rounded-lg border p-3"
+                                    style={{
+                                      borderColor: log.action_type === 'passed' ? '#BBF7D0' : '#FECACA',
+                                      backgroundColor: log.action_type === 'passed' ? '#F0FFF4' : '#FEF2F2',
+                                      contentVisibility: 'auto',
+                                      containIntrinsicSize: '220px',
+                                    }}
+                                  >
+                                    <div className="text-xs mb-2" style={{ color: log.action_type === 'passed' ? '#166534' : '#B91C1C' }}>
+                                      第 {log.round} 轮回归 · {log.action_type === 'passed' ? '回归通过' : '回归失败'} · {log.actor_name} · {formatDateTime(log.created_at)}
+                                    </div>
+                                    {renderHtml(log.content, '本轮回归未填写说明', log.action_type === 'passed' ? 'success' : 'danger')}
+                                  </div>
+                                )) : (
+                                  <div className="text-sm" style={{ color: '#9CA3AF' }}>暂未记录回归说明</div>
+                                )}
 
-                              {canRegression && (
-                                <div className="rounded-lg border p-3" style={{ borderColor: '#BFDBFE', backgroundColor: '#F8FBFF' }}>
-                                  <div className="text-xs font-semibold mb-2" style={{ color: '#1D4ED8' }}>
-                                    当前轮到你回归，请记录验证过程；失败后会自动退回 {fixerUsername}。
+                                {canRegression && (
+                                  <div className="space-y-3">
+                                    <div className="text-sm font-semibold" style={{ color: '#B91C1C' }}>
+                                      当前轮到你回归，请记录验证过程；失败后会自动退回 {fixerUsername}。
+                                    </div>
+                                    <MiniRichTextEditor
+                                      value={drafts[bug.id] || ''}
+                                      onChange={(html) => setDrafts(prev => ({ ...prev, [bug.id]: html }))}
+                                      placeholder="记录回归步骤、结果、截图和失败原因..."
+                                      minHeight={180}
+                                    />
+                                    <div className="mt-3 flex justify-end gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => submitAction(bug.id, 'regression_fail')}
+                                        disabled={submittingAction === bug.id}
+                                        className="px-4 py-2 text-sm rounded hover:opacity-90 disabled:opacity-50"
+                                        style={{ backgroundColor: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA' }}
+                                      >
+                                        回归失败，退回处理
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => submitAction(bug.id, 'regression_pass')}
+                                        disabled={submittingAction === bug.id}
+                                        className="px-4 py-2 text-sm rounded text-white hover:opacity-90 disabled:opacity-50"
+                                        style={{ backgroundColor: '#2563EB' }}
+                                      >
+                                        {submittingAction === bug.id ? '提交中...' : '回归通过，关闭问题单'}
+                                      </button>
+                                    </div>
                                   </div>
-                                  <MiniRichTextEditor
-                                    value={drafts[bug.id] || ''}
-                                    onChange={(html) => setDrafts(prev => ({ ...prev, [bug.id]: html }))}
-                                    placeholder="记录回归步骤、结果、截图和失败原因..."
-                                    minHeight={180}
-                                  />
-                                  <div className="mt-3 flex justify-end gap-2">
-                                    <button
-                                      type="button"
-                                      onClick={() => submitAction(bug.id, 'regression_fail')}
-                                      disabled={submittingAction === bug.id}
-                                      className="px-4 py-2 text-sm rounded hover:opacity-90 disabled:opacity-50"
-                                      style={{ backgroundColor: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA' }}
-                                    >
-                                      回归失败，退回处理
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => submitAction(bug.id, 'regression_pass')}
-                                      disabled={submittingAction === bug.id}
-                                      className="px-4 py-2 text-sm rounded text-white hover:opacity-90 disabled:opacity-50"
-                                      style={{ backgroundColor: '#2563EB' }}
-                                    >
-                                      {submittingAction === bug.id ? '提交中...' : '回归通过，关闭问题单'}
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
+                                )}
+                              </div>
                             </div>
                           </div>
                         </div>
