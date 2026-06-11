@@ -64,17 +64,25 @@ export async function PUT(
 
     const db = getDb();
     const file = db.prepare(`
-      SELECT pf.id, p.is_archived, p.publish_status
+      SELECT pf.id, pf.space_type, pf.owner_user_id, p.is_archived, p.publish_status
       FROM project_space_files pf
       JOIN projects p ON pf.project_id = p.id
       WHERE pf.id = ?
-    `).get(fileId) as { id: number; is_archived: number; publish_status: string } | undefined;
+    `).get(fileId) as {
+      id: number;
+      space_type: 'public' | 'personal';
+      owner_user_id: number | null;
+      is_archived: number;
+      publish_status: string;
+    } | undefined;
 
     if (!file) return NextResponse.json({ error: '文件不存在' }, { status: 404 });
     if (file.publish_status === 'draft' && !isManagerUser(user.username)) {
       return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
     }
-    if (file.is_archived === 1 && !isManagerUser(user.username)) {
+    const canManageArchivedFile = isManagerUser(user.username)
+      || (file.is_archived === 1 && file.space_type === 'personal' && file.owner_user_id === user.id);
+    if (file.is_archived === 1 && !canManageArchivedFile) {
       return NextResponse.json({ error: '归档项目不允许重命名文件' }, { status: 403 });
     }
 
@@ -98,17 +106,26 @@ export async function DELETE(
     const fileId = Number(id);
     const db = getDb();
     const file = db.prepare(`
-      SELECT pf.id, pf.storage_path, p.is_archived, p.publish_status
+      SELECT pf.id, pf.storage_path, pf.space_type, pf.owner_user_id, p.is_archived, p.publish_status
       FROM project_space_files pf
       JOIN projects p ON pf.project_id = p.id
       WHERE pf.id = ?
-    `).get(fileId) as { id: number; storage_path: string; is_archived: number; publish_status: string } | undefined;
+    `).get(fileId) as {
+      id: number;
+      storage_path: string;
+      space_type: 'public' | 'personal';
+      owner_user_id: number | null;
+      is_archived: number;
+      publish_status: string;
+    } | undefined;
 
     if (!file) return NextResponse.json({ error: '文件不存在' }, { status: 404 });
     if (file.publish_status === 'draft' && !isManagerUser(user.username)) {
       return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
     }
-    if (file.is_archived === 1 && !isManagerUser(user.username)) {
+    const canManageArchivedFile = isManagerUser(user.username)
+      || (file.is_archived === 1 && file.space_type === 'personal' && file.owner_user_id === user.id);
+    if (file.is_archived === 1 && !canManageArchivedFile) {
       return NextResponse.json({ error: '归档项目不允许删除文件' }, { status: 403 });
     }
 

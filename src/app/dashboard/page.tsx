@@ -15,6 +15,35 @@ import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, CartesianGrid, Toolti
 // ============ Permission Constants ============
 const MANAGER_USERNAMES = ['admin', '张宇慧', '刘济聪'];
 type KanbanPriorityMode = 'all' | 'high';
+const IMAGE_FILE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'];
+const TEXT_FILE_EXTENSIONS = ['.txt', '.log', '.csv', '.json', '.xml', '.yaml', '.yml', '.md', '.ini', '.conf', '.cfg', '.properties'];
+const VIDEO_FILE_EXTENSIONS = ['.mp4', '.webm', '.ogg', '.mov', '.m4v'];
+type PreviewMediaType = 'image' | 'video' | 'unsupported';
+type UploadProgressState = { active: boolean; percent: number; label: string; indeterminate?: boolean };
+
+function getXhrErrorMessage(xhr: XMLHttpRequest, fallback: string) {
+  try {
+    const result = JSON.parse(xhr.responseText);
+    if (result?.error) return String(result.error);
+  } catch {
+    // ignore parse error
+  }
+
+  const responseText = xhr.responseText?.trim();
+  if (responseText && !responseText.startsWith('<')) {
+    return responseText;
+  }
+  if (xhr.status === 413) {
+    return '上传内容过大，请拆分后重试';
+  }
+  if (xhr.status >= 500) {
+    return '服务器处理上传时失败，请稍后重试';
+  }
+  if (xhr.status >= 400) {
+    return `${fallback}（HTTP ${xhr.status}）`;
+  }
+  return fallback;
+}
 
 // ============ Types ============
 interface UserInfo {
@@ -361,7 +390,7 @@ export default function DashboardPage() {
   const [showUserMgmt, setShowUserMgmt] = useState(false);
   const [showChangePwd, setShowChangePwd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [showPreview, setShowPreview] = useState<{ fileId: number; content: string; filename: string; truncated: boolean; isImage?: boolean; downloadUrl?: string; previewUrl?: string } | null>(null);
+  const [showPreview, setShowPreview] = useState<{ fileId: number; content: string; filename: string; truncated: boolean; mediaType?: PreviewMediaType; downloadUrl?: string; previewUrl?: string } | null>(null);
   const [statsPreview, setStatsPreview] = useState<{ level: 'project' | 'module'; id: number; name: string } | null>(null);
 
   const loadTree = useCallback(async (filterTesterId?: string, archiveFilter?: string) => {
@@ -451,6 +480,52 @@ export default function DashboardPage() {
       setSelectedProjectOverviewLoading(false);
     }
   }, []);
+
+  const refreshKanbanAssignmentViews = useCallback(async () => {
+    const resolvedTesterFilter = testerFilter === 'my' && user ? String(user.id) : testerFilter || '';
+    await loadTree(resolvedTesterFilter, projectFilter);
+
+    if (showKanban) {
+      await fetchKanbanData(kanbanPriorityMode);
+    }
+
+    if (selectedProjectOverview) {
+      await fetchProjectOverview(
+        selectedProjectOverview.id,
+        selectedProjectOverviewMode,
+        selectedProjectOverviewTesterFilter,
+      );
+    }
+  }, [
+    fetchKanbanData,
+    fetchProjectOverview,
+    kanbanPriorityMode,
+    loadTree,
+    projectFilter,
+    selectedProjectOverview,
+    selectedProjectOverviewMode,
+    selectedProjectOverviewTesterFilter,
+    showKanban,
+    testerFilter,
+    user,
+  ]);
+
+  const handleAssignTargetFromKanban = useCallback(async (
+    level: 'module' | 'case',
+    targetId: number,
+    userId: number,
+  ) => {
+    const response = await fetch('/api/assignments', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ level, targetId, userId }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result?.success) {
+      throw new Error(result?.error || '分配失败');
+    }
+    await refreshKanbanAssignmentViews();
+  }, [refreshKanbanAssignmentViews]);
 
   const fetchJiraBoardData = useCallback(async () => {
     setJiraBoardLoading(true);
@@ -696,12 +771,6 @@ export default function DashboardPage() {
     loadTree(filterId || '', value);
   };
 
-  const getResolvedSidebarTesterFilter = useCallback(() => {
-    if (testerFilter === 'my' && user) return String(user.id);
-    if (testerFilter) return testerFilter;
-    return 'all';
-  }, [testerFilter, user]);
-
   const handleSelectProjectSpace = useCallback((projectId: number, projectName: string) => {
     setShowKanban(false);
     setShowJiraBoard(false);
@@ -876,7 +945,7 @@ export default function DashboardPage() {
               onSelectCase={handleSelectCase}
               onSelectProject={(projectId: number) => {
                 setSelectedNodeId(`project-${projectId}`);
-                fetchProjectOverview(projectId, 'all', getResolvedSidebarTesterFilter());
+                fetchProjectOverview(projectId, 'all', 'all');
               }}
               onSelectProjectSpace={handleSelectProjectSpace}
               onTreeChange={() => loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter)}
@@ -993,6 +1062,7 @@ export default function DashboardPage() {
               onClose={() => { setShowKanban(false); setKanbanData(null); }}
               onNavigateCase={handleOpenCaseById}
               onNavigateTreeNode={handleNavigateTreeNode}
+              onAssignTarget={handleAssignTargetFromKanban}
               onRefresh={() => fetchKanbanData(kanbanPriorityMode)}
             />
           ) : selectedProjectSpace ? (
@@ -1000,9 +1070,16 @@ export default function DashboardPage() {
               projectId={selectedProjectSpace.projectId}
               projectName={selectedProjectSpace.projectName}
               currentUser={user}
-              onPreviewFile={(fileId, content, filename, truncated, urls) => {
-                const isImage = !content;
-                setShowPreview({ fileId, content, filename, truncated, isImage, ...urls });
+              onPreviewFile={(fileId, content, filename, truncated, options) => {
+                setShowPreview({
+                  fileId,
+                  content,
+                  filename,
+                  truncated,
+                  mediaType: options?.mediaType,
+                  downloadUrl: options?.downloadUrl,
+                  previewUrl: options?.previewUrl,
+                });
               }}
             />
           ) : selectedCase ? (
@@ -1059,10 +1136,14 @@ export default function DashboardPage() {
                 loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter); // Refresh tree to update test result icons
               }}
               onFilesChange={(files) => setSelectedFiles(files)}
-              onPreviewFile={(fileId, content, filename, truncated) => {
-                // If content is empty, it's an image preview (fileId tells us the preview URL)
-                const isImage = !content;
-                setShowPreview({ fileId, content, filename, truncated, isImage });
+              onPreviewFile={(fileId, content, filename, truncated, options) => {
+                setShowPreview({
+                  fileId,
+                  content,
+                  filename,
+                  truncated,
+                  mediaType: options?.mediaType,
+                });
               }}
             />
           ) : selectedProjectOverview ? (
@@ -1071,9 +1152,11 @@ export default function DashboardPage() {
               isHighPriorityMode={selectedProjectOverviewMode === 'high'}
               onNavigateCase={handleOpenCaseById}
               onNavigateTreeNode={handleNavigateTreeNode}
+              isManager={isManager}
               testerFilter={selectedProjectOverviewTesterFilter}
               onTesterFilterChange={setSelectedProjectOverviewTesterFilter}
               onPriorityModeChange={(priorityMode) => fetchProjectOverview(selectedProjectOverview.id, priorityMode, selectedProjectOverviewTesterFilter)}
+              onAssignTarget={handleAssignTargetFromKanban}
               allUsers={allUsers}
             />
           ) : selectedProjectOverviewLoading ? (
@@ -1113,7 +1196,7 @@ export default function DashboardPage() {
           filename={showPreview.filename}
           truncated={showPreview.truncated}
           fileId={showPreview.fileId}
-          isImage={showPreview.isImage}
+          mediaType={showPreview.mediaType}
           downloadUrl={showPreview.downloadUrl}
           previewUrl={showPreview.previewUrl}
           onClose={() => setShowPreview(null)}
@@ -2281,7 +2364,13 @@ function CaseDetail({
   files: FileData[];
   onUpdate: (updated: CaseData) => void;
   onFilesChange: (files: FileData[]) => void;
-  onPreviewFile: (fileId: number, content: string, filename: string, truncated: boolean) => void;
+  onPreviewFile: (
+    fileId: number,
+    content: string,
+    filename: string,
+    truncated: boolean,
+    options?: { mediaType?: PreviewMediaType }
+  ) => void;
   permissions: CasePermissions;
   tester: CaseTester | null;
   isManager: boolean;
@@ -2316,7 +2405,7 @@ function CaseDetail({
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<{ active: boolean; percent: number; label: string }>({ active: false, percent: 0, label: '' });
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressState>({ active: false, percent: 0, label: '' });
   const [renamingFile, setRenamingFile] = useState<{ id: number; name: string } | null>(null);
   const [caseDragOver, setCaseDragOver] = useState(false);
   const caseDragCounterRef = useRef(0);
@@ -2530,15 +2619,14 @@ function CaseDetail({
     try {
       const formData = new FormData();
       formData.append('caseId', form.id.toString());
-      for (let i = 0; i < fileList.length; i++) {
-        formData.append('files', fileList[i]);
-      }
-      // If folder was detected via drag-and-drop, send folder name signal and file paths
       if (folderName) {
         formData.append('folderName', folderName);
       }
       if (filePaths && Object.keys(filePaths).length > 0) {
         formData.append('filePaths', JSON.stringify(filePaths));
+      }
+      for (let i = 0; i < fileList.length; i++) {
+        formData.append('files', fileList[i]);
       }
 
       // Use XHR for progress tracking
@@ -2550,10 +2638,13 @@ function CaseDetail({
             setUploadProgress(prev => ({ ...prev, percent: pct, label: `上传中 (${pct}%)...` }));
           }
         });
+        xhr.upload.addEventListener('load', () => {
+          setUploadProgress({ active: true, percent: 100, label: '文件已上传，服务器正在整理文件...', indeterminate: true });
+        });
         xhr.addEventListener('load', () => {
           try {
             const data = JSON.parse(xhr.responseText);
-            if (data.success) {
+            if (xhr.status >= 200 && xhr.status < 300 && data.success) {
               // Refresh files list
               fetch(`/api/cases/${form.id}?_t=${Date.now()}`)
                 .then(r => r.json())
@@ -2565,22 +2656,25 @@ function CaseDetail({
               setMessage({ type: 'success', text: '文件上传成功' });
               resolve();
             } else {
-              setMessage({ type: 'error', text: data.error || '上传失败' });
-              reject(new Error(data.error));
+              reject(new Error(data?.error || getXhrErrorMessage(xhr, '上传失败')));
             }
           } catch {
-            reject(new Error('Parse error'));
+            if (xhr.status >= 200 && xhr.status < 300) {
+              reject(new Error('上传响应解析失败'));
+              return;
+            }
+            reject(new Error(getXhrErrorMessage(xhr, '上传失败')));
           }
         });
         xhr.addEventListener('error', () => {
-          setMessage({ type: 'error', text: '上传失败，请稍后重试' });
-          reject(new Error('Network error'));
+          reject(new Error(getXhrErrorMessage(xhr, '网络异常，上传失败')));
         });
         xhr.open('POST', '/api/files/upload');
         xhr.send(formData);
       });
-    } catch {
-      setMessage({ type: 'error', text: '上传失败，请稍后重试' });
+    } catch (error) {
+      const errorMessage = error instanceof Error && error.message ? error.message : '上传失败，请稍后重试';
+      setMessage({ type: 'error', text: errorMessage });
     } finally {
       setUploading(false);
       setUploadProgress({ active: false, percent: 0, label: '' });
@@ -2622,11 +2716,19 @@ function CaseDetail({
 
   const handlePreviewFile = async (fileId: number, fileType?: string) => {
     const ext = fileType?.toLowerCase() || '';
-    const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'].includes(ext);
+    const isImage = IMAGE_FILE_EXTENSIONS.includes(ext);
+    const isVideo = VIDEO_FILE_EXTENSIONS.includes(ext);
+    const file = files.find(f => f.id === fileId);
     if (isImage) {
-      // For image files, open preview dialog with the preview URL
-      const file = files.find(f => f.id === fileId);
-      onPreviewFile(fileId, '', file?.original_name || '', false);
+      onPreviewFile(fileId, '', file?.original_name || '', false, { mediaType: 'image' });
+      return;
+    }
+    if (isVideo) {
+      onPreviewFile(fileId, '', file?.original_name || '', false, { mediaType: 'video' });
+      return;
+    }
+    if (!isTextFile(ext)) {
+      onPreviewFile(fileId, '', file?.original_name || '', false, { mediaType: 'unsupported' });
       return;
     }
     try {
@@ -2650,8 +2752,9 @@ function CaseDetail({
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
-  const isImageFile = (ext: string) => ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'].includes(ext.toLowerCase());
-  const isTextFile = (ext: string) => ['.txt', '.log', '.csv', '.json', '.xml', '.yaml', '.yml', '.md', '.ini', '.conf', '.cfg', '.properties'].includes(ext.toLowerCase());
+  const isImageFile = (ext: string) => IMAGE_FILE_EXTENSIONS.includes(ext.toLowerCase());
+  const isTextFile = (ext: string) => TEXT_FILE_EXTENSIONS.includes(ext.toLowerCase());
+  const isVideoFile = (ext: string) => VIDEO_FILE_EXTENSIONS.includes(ext.toLowerCase());
 
   // Filter out editor screenshots from file list display
   const displayFiles = files.filter(f => f.source !== 'editor');
@@ -3126,10 +3229,21 @@ function CaseDetail({
             <div className="flex-1">
               <div className="flex items-center justify-between mb-1">
                 <span className="text-xs" style={{ color: '#0073E6' }}>{uploadProgress.label}</span>
-                <span className="text-xs font-medium" style={{ color: '#0073E6' }}>{uploadProgress.percent}%</span>
+                <span className="text-xs font-medium" style={{ color: '#0073E6' }}>
+                  {uploadProgress.indeterminate ? '处理中' : `${uploadProgress.percent}%`}
+                </span>
               </div>
               <div className="w-full h-1.5 bg-white rounded-full overflow-hidden">
-                <div className="h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress.percent}%`, backgroundColor: '#0073E6' }} />
+                <div
+                  className={uploadProgress.indeterminate ? 'h-full rounded-full animate-pulse' : 'h-full rounded-full transition-all duration-300'}
+                  style={{
+                    width: uploadProgress.indeterminate ? '100%' : `${uploadProgress.percent}%`,
+                    background: uploadProgress.indeterminate
+                      ? 'linear-gradient(90deg, #93C5FD 0%, #0073E6 50%, #93C5FD 100%)'
+                      : '#0073E6',
+                    backgroundSize: uploadProgress.indeterminate ? '200% 100%' : undefined,
+                  }}
+                />
               </div>
             </div>
           </div>
@@ -3171,20 +3285,18 @@ function CaseDetail({
                     <span
                       className="text-xs truncate hover:underline"
                       style={{ color: '#0073E6', cursor: 'pointer' }}
-                      title="点击下载"
-                      onClick={() => { const a = document.createElement('a'); a.href = `/api/files/${file.id}`; a.download = file.original_name; a.click(); }}
+                      title="点击预览"
+                      onClick={() => handlePreviewFile(file.id, file.file_type)}
                     >{file.original_name}</span>
                   )}
                   <span className="text-xs flex-shrink-0" style={{ color: '#9CA3AF' }}>{formatFileSize(file.file_size)}</span>
                 </div>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  {(isImageFile(file.file_type) || isTextFile(file.file_type)) && (
-                    <button type="button" className="p-1 rounded hover:bg-gray-100" title="预览"
-                      onClick={() => handlePreviewFile(file.id, file.file_type)}
-                    >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
-                    </button>
-                  )}
+                  <button type="button" className="p-1 rounded hover:bg-gray-100" title="预览"
+                    onClick={() => handlePreviewFile(file.id, file.file_type)}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                  </button>
                   <button type="button" className="p-1 rounded hover:bg-gray-100" title="下载"
                     onClick={() => { const a = document.createElement('a'); a.href = `/api/files/${file.id}`; a.download = file.original_name; a.click(); }}
                   >
@@ -3530,7 +3642,7 @@ function FilePreviewDialog({
   filename,
   truncated,
   fileId,
-  isImage,
+  mediaType,
   downloadUrl,
   previewUrl,
   onClose,
@@ -3539,16 +3651,174 @@ function FilePreviewDialog({
   filename: string;
   truncated: boolean;
   fileId: number;
-  isImage?: boolean;
+  mediaType?: PreviewMediaType;
   downloadUrl?: string;
   previewUrl?: string;
   onClose: () => void;
 }) {
   const resolvedDownloadUrl = downloadUrl || `/api/files/${fileId}`;
   const resolvedPreviewUrl = previewUrl || `/api/files/preview/${fileId}`;
+  const [mediaMeta, setMediaMeta] = useState<{ width: number; height: number } | null>(null);
+  const [mediaZoom, setMediaZoom] = useState(1);
+  const [mediaPos, setMediaPos] = useState({ x: 0, y: 0 });
+  const [draggingMedia, setDraggingMedia] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const isMediaViewer = mediaType === 'image' || mediaType === 'video';
+
+  useEffect(() => {
+    setMediaZoom(1);
+    setMediaPos({ x: 0, y: 0 });
+    setDraggingMedia(false);
+    setMediaMeta(null);
+  }, [fileId, mediaType]);
+
+  const handleMediaWheel = (e: React.WheelEvent) => {
+    if (mediaType !== 'image') return;
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.12 : 0.12;
+    setMediaZoom(prev => Math.min(5, Math.max(0.2, prev + delta)));
+  };
+
+  const handleMediaDragStart = (e: React.MouseEvent) => {
+    if (!isMediaViewer || mediaZoom <= 1) return;
+    setDraggingMedia(true);
+    setDragStart({ x: e.clientX - mediaPos.x, y: e.clientY - mediaPos.y });
+  };
+
+  const handleMediaDrag = useCallback((e: MouseEvent) => {
+    if (!draggingMedia) return;
+    setMediaPos({ x: e.clientX - dragStart.x, y: e.clientY - dragStart.y });
+  }, [draggingMedia, dragStart]);
+
+  const handleMediaDragEnd = useCallback(() => {
+    setDraggingMedia(false);
+  }, []);
+
+  useEffect(() => {
+    if (!draggingMedia) return;
+    document.addEventListener('mousemove', handleMediaDrag);
+    document.addEventListener('mouseup', handleMediaDragEnd);
+    return () => {
+      document.removeEventListener('mousemove', handleMediaDrag);
+      document.removeEventListener('mouseup', handleMediaDragEnd);
+    };
+  }, [draggingMedia, handleMediaDrag, handleMediaDragEnd]);
+
+  if (isMediaViewer) {
+    return (
+      <div
+        className="fixed inset-0 z-[70] flex items-center justify-center"
+        style={{ backgroundColor: 'rgba(0,0,0,0.88)' }}
+        onClick={onClose}
+        onWheel={handleMediaWheel}
+      >
+        <div className="absolute top-4 left-6 text-white/90 text-sm">
+          <div className="font-medium">{filename}</div>
+          {mediaMeta && (
+            <div className="text-xs text-white/60 mt-1">原始尺寸：{mediaMeta.width} × {mediaMeta.height}px</div>
+          )}
+        </div>
+        <div className="absolute top-4 right-4 flex items-center gap-2 z-10">
+          <a
+            href={resolvedDownloadUrl}
+            className="px-3 py-1.5 rounded-full text-sm text-white hover:bg-white/15 transition-colors"
+            onClick={(e) => e.stopPropagation()}
+          >
+            下载
+          </a>
+          <button
+            className="w-9 h-9 rounded-full flex items-center justify-center text-white hover:bg-white/15 transition-colors text-lg"
+            onClick={(e) => { e.stopPropagation(); setMediaZoom(prev => Math.min(5, prev + 0.25)); }}
+            title="放大"
+          >
+            +
+          </button>
+          <span className="text-white text-sm min-w-[54px] text-center">{Math.round(mediaZoom * 100)}%</span>
+          <button
+            className="w-9 h-9 rounded-full flex items-center justify-center text-white hover:bg-white/15 transition-colors text-lg"
+            onClick={(e) => { e.stopPropagation(); setMediaZoom(prev => Math.max(0.2, prev - 0.25)); }}
+            title="缩小"
+          >
+            -
+          </button>
+          <button
+            className="px-3 py-1.5 rounded-full text-sm text-white hover:bg-white/15 transition-colors"
+            onClick={(e) => { e.stopPropagation(); setMediaZoom(1); setMediaPos({ x: 0, y: 0 }); }}
+            title="重置"
+          >
+            1:1
+          </button>
+          <button
+            className="w-9 h-9 rounded-full flex items-center justify-center text-white hover:bg-white/15 transition-colors"
+            onClick={onClose}
+            title="关闭"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+          </button>
+        </div>
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-white/60 text-xs z-10">
+          {mediaType === 'image' ? '滚轮缩放 | 拖拽移动 | 点击空白处关闭' : '按钮缩放 | 拖拽移动 | 点击空白处关闭'}
+        </div>
+        {mediaType === 'image' ? (
+          <img
+            src={resolvedPreviewUrl}
+            alt={filename}
+            className="max-w-none select-none"
+            style={{
+              transform: `scale(${mediaZoom}) translate(${mediaPos.x / mediaZoom}px, ${mediaPos.y / mediaZoom}px)`,
+              transition: draggingMedia ? 'none' : 'transform 0.15s ease',
+              cursor: mediaZoom > 1 ? (draggingMedia ? 'grabbing' : 'grab') : 'default',
+              transformOrigin: 'center center',
+            }}
+            onLoad={(event) => {
+              setMediaMeta({
+                width: event.currentTarget.naturalWidth,
+                height: event.currentTarget.naturalHeight,
+              });
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => {
+              e.preventDefault();
+              handleMediaDragStart(e);
+            }}
+            draggable={false}
+          />
+        ) : (
+          <video
+            src={resolvedPreviewUrl}
+            controls
+            preload="metadata"
+            className="max-w-none rounded-lg shadow-2xl"
+            style={{
+              transform: `scale(${mediaZoom}) translate(${mediaPos.x / mediaZoom}px, ${mediaPos.y / mediaZoom}px)`,
+              transition: draggingMedia ? 'none' : 'transform 0.15s ease',
+              cursor: mediaZoom > 1 ? (draggingMedia ? 'grabbing' : 'grab') : 'default',
+              transformOrigin: 'center center',
+              maxWidth: '88vw',
+              maxHeight: '84vh',
+              backgroundColor: '#000',
+            }}
+            onLoadedMetadata={(event) => {
+              setMediaMeta({
+                width: event.currentTarget.videoWidth,
+                height: event.currentTarget.videoHeight,
+              });
+            }}
+            onClick={(e) => e.stopPropagation()}
+            onMouseDown={(e) => {
+              if (mediaZoom <= 1) return;
+              e.preventDefault();
+              handleMediaDragStart(e);
+            }}
+          />
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }} onClick={onClose}>
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-3xl mx-4" style={{ maxHeight: '85vh' }} onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-lg shadow-xl w-full mx-4" style={{ maxWidth: '95vw', maxHeight: '92vh' }} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b" style={{ borderColor: '#EEEEEE' }}>
           <h2 className="font-bold text-sm" style={{ color: '#333' }}>预览：{filename}</h2>
           <div className="flex items-center gap-2">
@@ -3564,14 +3834,33 @@ function FilePreviewDialog({
             </button>
           </div>
         </div>
-        <div className="px-6 py-4 overflow-auto" style={{ maxHeight: '70vh' }}>
-          {isImage ? (
-            <div className="flex items-center justify-center">
-              <img
-                src={resolvedPreviewUrl}
-                alt={filename}
-                style={{ maxWidth: '100%', maxHeight: '65vh', objectFit: 'contain' }}
-              />
+        <div className="px-6 py-4 overflow-auto" style={{ maxHeight: '82vh' }}>
+          {mediaType === 'unsupported' ? (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div
+                className="w-16 h-16 rounded-full flex items-center justify-center mb-4"
+                style={{ backgroundColor: '#EFF6FF', color: '#0073E6' }}
+              >
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+              </div>
+              <div className="text-sm font-medium" style={{ color: '#1F2937' }}>当前文件暂不支持在线预览</div>
+              <div className="text-xs mt-2" style={{ color: '#64748B' }}>你可以在这里直接下载后查看原文件</div>
+              <a
+                href={resolvedDownloadUrl}
+                className="mt-5 inline-flex items-center gap-2 px-4 py-2 rounded-md text-sm text-white"
+                style={{ backgroundColor: '#0073E6' }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                  <polyline points="7 10 12 15 17 10" />
+                  <line x1="12" y1="15" x2="12" y2="3" />
+                </svg>
+                下载文件
+              </a>
             </div>
           ) : (
             <>
@@ -3603,13 +3892,13 @@ function ProjectSpaceView({
     content: string,
     filename: string,
     truncated: boolean,
-    urls: { downloadUrl: string; previewUrl: string }
+    options: { downloadUrl: string; previewUrl: string; mediaType?: PreviewMediaType }
   ) => void;
 }) {
   const [data, setData] = useState<ProjectSpaceSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<{ active: boolean; percent: number; label: string }>({ active: false, percent: 0, label: '' });
+  const [uploadProgress, setUploadProgress] = useState<UploadProgressState>({ active: false, percent: 0, label: '' });
   const [dragOver, setDragOver] = useState(false);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [pendingUpload, setPendingUpload] = useState<{ files: File[]; folderName?: string; filePaths?: Record<number, string> } | null>(null);
@@ -3618,6 +3907,7 @@ function ProjectSpaceView({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const dragCounterRef = useRef(0);
+  const isManager = currentUser.role === 'admin' || MANAGER_USERNAMES.includes(currentUser.username);
 
   const loadProjectSpace = useCallback(async () => {
     setLoading(true);
@@ -3696,12 +3986,12 @@ function ProjectSpaceView({
       const formData = new FormData();
       formData.append('projectId', String(projectId));
       formData.append('targetSpace', targetSpace);
-      for (let i = 0; i < fileList.length; i += 1) {
-        formData.append('files', fileList[i]);
-      }
       if (folderName) formData.append('folderName', folderName);
       if (filePaths && Object.keys(filePaths).length > 0) {
         formData.append('filePaths', JSON.stringify(filePaths));
+      }
+      for (let i = 0; i < fileList.length; i += 1) {
+        formData.append('files', fileList[i]);
       }
 
       await new Promise<void>((resolve, reject) => {
@@ -3709,31 +3999,38 @@ function ProjectSpaceView({
         xhr.upload.addEventListener('progress', (event) => {
           if (event.lengthComputable) {
             const percent = Math.round((event.loaded / event.total) * 100);
-            setUploadProgress({ active: true, percent, label: `上传中 (${percent}%)...` });
+            setUploadProgress({ active: true, percent, label: `上传中 (${percent}%)...`, indeterminate: false });
           }
+        });
+        xhr.upload.addEventListener('load', () => {
+          setUploadProgress({ active: true, percent: 100, label: '文件已上传，服务器正在整理文件...', indeterminate: true });
         });
         xhr.addEventListener('load', () => {
           try {
             const result = JSON.parse(xhr.responseText);
-            if (result.success) {
+            if (xhr.status >= 200 && xhr.status < 300 && result.success) {
               setMessage({ type: 'success', text: targetSpace === 'public' ? '公共文件上传成功' : '个人空间文件上传成功' });
               loadProjectSpace();
               resolve();
             } else {
-              setMessage({ type: 'error', text: result.error || '上传失败' });
-              reject(new Error(result.error || 'upload failed'));
+              reject(new Error(result?.error || getXhrErrorMessage(xhr, '上传失败')));
             }
           } catch (error) {
-            reject(error);
+            if (xhr.status >= 200 && xhr.status < 300) {
+              reject(error);
+              return;
+            }
+            reject(new Error(getXhrErrorMessage(xhr, '上传失败')));
           }
         });
-        xhr.addEventListener('error', () => reject(new Error('network error')));
+        xhr.addEventListener('error', () => reject(new Error(getXhrErrorMessage(xhr, '网络异常，上传失败'))));
         xhr.open('POST', '/api/project-space/upload');
         xhr.send(formData);
       });
     } catch (error) {
       console.error('Upload project space file error:', error);
-      setMessage({ type: 'error', text: '上传失败，请稍后重试' });
+      const errorMessage = error instanceof Error && error.message ? error.message : '上传失败，请稍后重试';
+      setMessage({ type: 'error', text: errorMessage });
     } finally {
       setUploading(false);
       setUploadProgress({ active: false, percent: 0, label: '' });
@@ -3791,11 +4088,20 @@ function ProjectSpaceView({
 
   const handlePreview = async (file: ProjectSpaceFileData) => {
     const ext = file.file_type.toLowerCase();
-    const isImage = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'].includes(ext);
+    const isImage = IMAGE_FILE_EXTENSIONS.includes(ext);
+    const isVideo = VIDEO_FILE_EXTENSIONS.includes(ext);
     const downloadUrl = `/api/project-space/files/${file.id}`;
     const previewUrl = `/api/project-space/files/preview/${file.id}`;
     if (isImage) {
-      onPreviewFile(file.id, '', file.original_name, false, { downloadUrl, previewUrl });
+      onPreviewFile(file.id, '', file.original_name, false, { downloadUrl, previewUrl, mediaType: 'image' });
+      return;
+    }
+    if (isVideo) {
+      onPreviewFile(file.id, '', file.original_name, false, { downloadUrl, previewUrl, mediaType: 'video' });
+      return;
+    }
+    if (!TEXT_FILE_EXTENSIONS.includes(ext)) {
+      onPreviewFile(file.id, '', file.original_name, false, { downloadUrl, previewUrl, mediaType: 'unsupported' });
       return;
     }
     try {
@@ -3826,19 +4132,22 @@ function ProjectSpaceView({
     return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
   };
 
-  const canPreviewFile = (ext: string) => {
-    const normalized = ext.toLowerCase();
-    return ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.txt', '.log', '.csv', '.json', '.xml', '.yaml', '.yml', '.md', '.ini', '.conf', '.cfg', '.properties'].includes(normalized);
-  };
-
   const getProjectSpaceFileIcon = (ext: string) => {
     const normalized = ext.toLowerCase();
-    if (['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'].includes(normalized)) {
+    if (IMAGE_FILE_EXTENSIONS.includes(normalized)) {
       return (
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2" className="flex-shrink-0">
           <rect x="3" y="3" width="18" height="18" rx="2" />
           <circle cx="8.5" cy="8.5" r="1.5" />
           <path d="M21 15l-5-5L5 21" />
+        </svg>
+      );
+    }
+    if (VIDEO_FILE_EXTENSIONS.includes(normalized)) {
+      return (
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2" className="flex-shrink-0">
+          <rect x="2" y="5" width="15" height="14" rx="2" />
+          <path d="m17 10 5-3v10l-5-3z" />
         </svg>
       );
     }
@@ -3862,7 +4171,7 @@ function ProjectSpaceView({
         </svg>
       );
     }
-    if (['.txt', '.log', '.md', '.json', '.xml', '.yaml', '.yml', '.ini', '.conf', '.cfg', '.properties'].includes(normalized)) {
+    if (TEXT_FILE_EXTENSIONS.includes(normalized)) {
       return (
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2" className="flex-shrink-0">
           <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
@@ -3955,7 +4264,12 @@ function ProjectSpaceView({
                 onBlur={() => handleRenameFile(file.id, renamingFile.name)}
               />
             ) : (
-              <span className="text-xs truncate hover:underline" style={{ color: '#0073E6' }} title={file.original_name}>
+              <span
+                className="text-xs truncate hover:underline cursor-pointer"
+                style={{ color: '#0073E6' }}
+                title="点击预览"
+                onClick={() => handlePreview(file)}
+              >
                 {file.original_name}
               </span>
             )}
@@ -3968,16 +4282,14 @@ function ProjectSpaceView({
         </div>
       </div>
       <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-        {canPreviewFile(file.file_type) && (
-          <button
-            type="button"
-            onClick={() => handlePreview(file)}
-            className="p-1 rounded hover:bg-gray-100"
-            title="预览"
-          >
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
-          </button>
-        )}
+        <button
+          type="button"
+          onClick={() => handlePreview(file)}
+          className="p-1 rounded hover:bg-gray-100"
+          title="预览"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#6B7280" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+        </button>
         <a
           href={`/api/project-space/files/${file.id}`}
           className="p-1 rounded hover:bg-gray-100"
@@ -4020,6 +4332,9 @@ function ProjectSpaceView({
       </div>
     );
   }
+
+  const isArchivedProject = data?.project.isArchived ?? false;
+  const canUploadPublicInArchivedProject = !isArchivedProject || isManager;
 
   return (
     <div
@@ -4159,16 +4474,29 @@ function ProjectSpaceView({
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-1">
                     <span className="text-xs" style={{ color: '#0073E6' }}>{uploadProgress.label}</span>
-                    <span className="text-xs font-medium" style={{ color: '#0073E6' }}>{uploadProgress.percent}%</span>
+                    <span className="text-xs font-medium" style={{ color: '#0073E6' }}>
+                      {uploadProgress.indeterminate ? '处理中' : `${uploadProgress.percent}%`}
+                    </span>
                   </div>
                   <div className="w-full h-1.5 bg-white rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all duration-300" style={{ width: `${uploadProgress.percent}%`, backgroundColor: '#0073E6' }} />
+                    <div
+                      className={uploadProgress.indeterminate ? 'h-full rounded-full animate-pulse' : 'h-full rounded-full transition-all duration-300'}
+                      style={{
+                        width: uploadProgress.indeterminate ? '100%' : `${uploadProgress.percent}%`,
+                        background: uploadProgress.indeterminate
+                          ? 'linear-gradient(90deg, #93C5FD 0%, #0073E6 50%, #93C5FD 100%)'
+                          : '#0073E6',
+                        backgroundSize: uploadProgress.indeterminate ? '200% 100%' : undefined,
+                      }}
+                    />
                   </div>
                 </div>
               </div>
             ) : (
               <div className="text-xs leading-5" style={{ color: '#64748B' }}>
-                选择文件后会弹窗确认上传到公共空间或你的个人空间。支持拖拽文件、文件夹、压缩包到当前项目空间页面，拖入整个文件夹时会自动压缩为 `zip` 后保存。
+                {isArchivedProject
+                  ? '当前项目已归档。公共空间保持只读，你仍可以上传到自己的个人空间。支持拖拽文件、文件夹、压缩包到当前项目空间页面，拖入整个文件夹时会自动压缩为 `zip` 后保存。'
+                  : '选择文件后会弹窗确认上传到公共空间或你的个人空间。支持拖拽文件、文件夹、压缩包到当前项目空间页面，拖入整个文件夹时会自动压缩为 `zip` 后保存。'}
               </div>
             )}
           </div>
@@ -4249,12 +4577,20 @@ function ProjectSpaceView({
             <div className="px-5 py-4 space-y-3">
               <button
                 type="button"
-                onClick={() => handleFileUpload(pendingUpload.files, 'public', pendingUpload.folderName, pendingUpload.filePaths)}
-                className="w-full text-left rounded-xl border px-4 py-3 hover:bg-amber-50 transition-colors"
+                onClick={() => {
+                  if (!canUploadPublicInArchivedProject) return;
+                  void handleFileUpload(pendingUpload.files, 'public', pendingUpload.folderName, pendingUpload.filePaths);
+                }}
+                disabled={!canUploadPublicInArchivedProject}
+                className="w-full text-left rounded-xl border px-4 py-3 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 style={{ borderColor: '#FCD34D', backgroundColor: '#FFFDF7' }}
               >
                 <div className="text-sm font-semibold" style={{ color: '#B45309' }}>上传到公共空间</div>
-                <div className="text-xs mt-1" style={{ color: '#7C6F64' }}>适合共享资料、测试包、说明文档，所有成员都能快速找到。</div>
+                <div className="text-xs mt-1" style={{ color: '#7C6F64' }}>
+                  {canUploadPublicInArchivedProject
+                    ? '适合共享资料、测试包、说明文档，所有成员都能快速找到。'
+                    : '归档项目的公共空间保持只读，不能再新增公共文件。'}
+                </div>
               </button>
               <button
                 type="button"
@@ -5636,30 +5972,53 @@ function ProjectExecutionSummary({
   isHighPriorityMode,
   onNavigateCase,
   onNavigateTreeNode,
+  isManager,
   onPriorityModeChange,
   testerFilter,
   onTesterFilterChange,
+  onAssignTarget,
   allUsers,
 }: {
   selectedProject: KanbanProjectStat;
   isHighPriorityMode: boolean;
   onNavigateCase: (caseId: number) => void;
   onNavigateTreeNode: (type: 'project' | 'module', dbId: number) => void;
+  isManager?: boolean;
   onPriorityModeChange?: (priorityMode: KanbanPriorityMode) => void;
   testerFilter?: string;
   onTesterFilterChange?: (value: string) => void;
+  onAssignTarget?: (level: 'module' | 'case', targetId: number, userId: number) => Promise<void>;
   allUsers: UserItem[];
 }) {
   const [showOnlyIncompleteModules, setShowOnlyIncompleteModules] = useState(false);
   const [expandedModuleKey, setExpandedModuleKey] = useState<string | null>(null);
   const [expandedProjectJiraKey, setExpandedProjectJiraKey] = useState<string | null>(null);
+  const [projectProgressViewMode, setProjectProgressViewMode] = useState<'project' | 'tester'>('project');
   const [projectJiraReporterFilter, setProjectJiraReporterFilter] = useState<string>('all');
   const [projectJiraStatusFilter, setProjectJiraStatusFilter] = useState<'all' | 'open' | 'pending'>('open');
+  const [categoryFilter, setCategoryFilter] = useState<'all' | 'function' | 'stress'>('all');
   const [jiraIssueMap, setJiraIssueMap] = useState<Record<string, JiraIssueSummary>>({});
   const [localTesterFilter, setLocalTesterFilter] = useState<string>('all');
+  const [kanbanAssigningTarget, setKanbanAssigningTarget] = useState<{
+    level: 'module' | 'case';
+    targetId: number;
+    name: string;
+    testerName?: string;
+    userId: string;
+  } | null>(null);
+  const [assigningFromKanban, setAssigningFromKanban] = useState(false);
+  const [assignmentError, setAssignmentError] = useState<string | null>(null);
 
   const effectiveTesterFilter = testerFilter ?? localTesterFilter;
   const handleTesterFilterChange = onTesterFilterChange ?? setLocalTesterFilter;
+
+  useEffect(() => {
+    setKanbanAssigningTarget(null);
+    setAssigningFromKanban(false);
+    setAssignmentError(null);
+    setProjectProgressViewMode('project');
+    setCategoryFilter('all');
+  }, [selectedProject.id, isHighPriorityMode]);
 
   useEffect(() => {
     const links = Array.from(new Set(
@@ -5705,6 +6064,25 @@ function ProjectExecutionSummary({
     if (rate > 0) return '#F59E0B';
     return '#CBD5E1';
   };
+
+  const matchesKanbanCategory = (
+    testCategory: string | null | undefined,
+    category: 'function' | 'stress',
+  ) => {
+    const normalized = (testCategory || '').trim();
+    if (category === 'function') {
+      return normalized === 'Function Test' || normalized === 'FW Function Test';
+    }
+    return normalized === 'Stress Test' || normalized === 'FW Stress Test';
+  };
+
+  const roundKanbanRate = (numerator: number, denominator: number) => (
+    denominator > 0 ? Math.round((numerator / denominator) * 1000) / 10 : 0
+  );
+
+  const compareKanbanNames = (left: string, right: string) => (
+    left.localeCompare(right, 'zh-CN', { numeric: true, sensitivity: 'base' })
+  );
 
   const getCaseStatusMeta = (testResult: string | null) => {
     if (testResult === 'Pass') return { label: '通过', color: '#16A34A', backgroundColor: '#DCFCE7' };
@@ -5765,24 +6143,236 @@ function ProjectExecutionSummary({
 通过 ${moduleStat.passed}  失败 ${moduleStat.failed}  阻塞 ${moduleStat.blocked}  未完成 ${moduleStat.incomplete}`
   );
 
+  const filteredProgressCases = useMemo(() => {
+    return selectedProject.cases.filter(caseItem => {
+      if (categoryFilter === 'function') return matchesKanbanCategory(caseItem.testCategory, 'function');
+      if (categoryFilter === 'stress') return matchesKanbanCategory(caseItem.testCategory, 'stress');
+      return true;
+    });
+  }, [categoryFilter, selectedProject.cases]);
+
+  const progressSummaryByCategory = useMemo(() => {
+    const buildSummary = (category: 'function' | 'stress') => {
+      const cases = selectedProject.cases.filter(caseItem => matchesKanbanCategory(caseItem.testCategory, category));
+      const completed = cases.filter(caseItem => ['Pass', 'Fail', 'Block'].includes(caseItem.testResult || '')).length;
+      return {
+        total: cases.length,
+        completed,
+        rate: roundKanbanRate(completed, cases.length),
+      };
+    };
+
+    return {
+      function: buildSummary('function'),
+      stress: buildSummary('stress'),
+    };
+  }, [selectedProject.cases]);
+
+  const progressModulesByCategory = useMemo(() => {
+    const buildModules = (category: 'function' | 'stress') => {
+      const visibleCases = selectedProject.cases.filter(caseItem => matchesKanbanCategory(caseItem.testCategory, category));
+
+      const rowMap = new Map<number, {
+        key: string;
+        moduleId: number;
+        moduleName: string;
+        moduleSortOrder: number;
+        total: number;
+        completed: number;
+      incomplete: number;
+      failed: number;
+        blocked: number;
+        rate: number;
+        testerNames: string[];
+      }>();
+
+      for (const caseItem of visibleCases) {
+        if (!rowMap.has(caseItem.moduleId)) {
+          rowMap.set(caseItem.moduleId, {
+            key: `${category}-${caseItem.moduleId}`,
+            moduleId: caseItem.moduleId,
+            moduleName: caseItem.moduleName,
+            moduleSortOrder: caseItem.moduleSortOrder,
+            total: 0,
+            completed: 0,
+            incomplete: 0,
+            failed: 0,
+            blocked: 0,
+            rate: 0,
+            testerNames: [],
+          });
+        }
+
+        const row = rowMap.get(caseItem.moduleId)!;
+        row.total++;
+        if (['Pass', 'Fail', 'Block'].includes(caseItem.testResult || '')) row.completed++;
+        if (!['Pass', 'Fail', 'Block'].includes(caseItem.testResult || '')) row.incomplete++;
+        if (caseItem.testResult === 'Fail') row.failed++;
+        if (caseItem.testResult === 'Block') row.blocked++;
+        if (caseItem.testerName && !row.testerNames.includes(caseItem.testerName)) {
+          row.testerNames.push(caseItem.testerName);
+        }
+      }
+
+      return Array.from(rowMap.values())
+        .map(row => ({
+          ...row,
+          rate: roundKanbanRate(row.completed, row.total),
+          testerNames: row.testerNames.sort((left, right) => compareKanbanNames(left, right)),
+        }))
+        .sort((left, right) => {
+          if (left.moduleSortOrder !== right.moduleSortOrder) return left.moduleSortOrder - right.moduleSortOrder;
+          return compareKanbanNames(left.moduleName, right.moduleName);
+        });
+    };
+
+    return {
+      function: buildModules('function'),
+      stress: buildModules('stress'),
+    };
+  }, [selectedProject.cases]);
+
+  const progressTesters = useMemo(() => {
+    const testerMap = new Map<number, KanbanTesterStat>();
+    const testerModuleMap = new Map<string, KanbanModuleStat>();
+
+    for (const caseItem of filteredProgressCases) {
+      const testerId = caseItem.testerId;
+      const testerName = caseItem.testerName || '未分配';
+      const moduleKey = `${testerId}:${caseItem.moduleId}`;
+      const isPass = caseItem.testResult === 'Pass';
+      const isFail = caseItem.testResult === 'Fail';
+      const isBlock = caseItem.testResult === 'Block';
+      const isCompleted = isPass || isFail || isBlock;
+
+      if (!testerMap.has(testerId)) {
+        testerMap.set(testerId, {
+          userId: testerId,
+          username: testerName,
+          total: 0,
+          completed: 0,
+          incomplete: 0,
+          passed: 0,
+          failed: 0,
+          blocked: 0,
+          completionRate: 0,
+          passRate: 0,
+          modules: [],
+        });
+      }
+
+      const testerStat = testerMap.get(testerId)!;
+      testerStat.total++;
+      if (isCompleted) testerStat.completed++;
+      if (!isCompleted) testerStat.incomplete++;
+      if (isPass) testerStat.passed++;
+      if (isFail) testerStat.failed++;
+      if (isBlock) testerStat.blocked++;
+
+      if (!testerModuleMap.has(moduleKey)) {
+        testerModuleMap.set(moduleKey, {
+          key: moduleKey,
+          moduleId: caseItem.moduleId,
+          moduleName: caseItem.moduleName,
+          moduleSortOrder: caseItem.moduleSortOrder,
+          total: 0,
+          completed: 0,
+          passed: 0,
+          failed: 0,
+          blocked: 0,
+          incomplete: 0,
+          completionRate: 0,
+          passRate: 0,
+        });
+      }
+
+      const moduleStat = testerModuleMap.get(moduleKey)!;
+      moduleStat.total++;
+      if (isCompleted) moduleStat.completed++;
+      if (!isCompleted) moduleStat.incomplete++;
+      if (isPass) moduleStat.passed++;
+      if (isFail) moduleStat.failed++;
+      if (isBlock) moduleStat.blocked++;
+    }
+
+    for (const testerStat of testerMap.values()) {
+      testerStat.completionRate = roundKanbanRate(testerStat.completed, testerStat.total);
+      testerStat.passRate = roundKanbanRate(testerStat.passed, testerStat.completed);
+    }
+
+    for (const moduleStat of testerModuleMap.values()) {
+      moduleStat.completionRate = roundKanbanRate(moduleStat.completed, moduleStat.total);
+      moduleStat.passRate = roundKanbanRate(moduleStat.passed, moduleStat.completed);
+      const testerStat = testerMap.get(Number(moduleStat.key.split(':')[0]));
+      if (testerStat) testerStat.modules.push(moduleStat);
+    }
+
+    return Array.from(testerMap.values())
+      .map(testerStat => ({
+        ...testerStat,
+        modules: testerStat.modules.sort((a, b) => {
+          if (a.moduleSortOrder !== b.moduleSortOrder) return a.moduleSortOrder - b.moduleSortOrder;
+          return a.moduleName.localeCompare(b.moduleName, 'zh-CN', { numeric: true, sensitivity: 'base' });
+        }),
+      }))
+      .sort((a, b) => compareKanbanNames(a.username, b.username));
+  }, [filteredProgressCases]);
+
   const getVisibleModules = (tester: KanbanTesterStat) => {
     return showOnlyIncompleteModules
       ? tester.modules.filter(moduleStat => moduleStat.incomplete > 0)
       : tester.modules;
   };
 
-  const visibleTesters = selectedProject.testers.filter(tester => (
+  const visibleTesters = progressTesters.filter(tester => (
     effectiveTesterFilter === 'all' || String(tester.userId) === effectiveTesterFilter
   ));
 
   const getModuleCases = (tester: KanbanTesterStat, moduleStat: KanbanModuleStat): KanbanCaseStat[] => {
-    return selectedProject.cases
+    return filteredProgressCases
       .filter(caseItem => caseItem.testerId === tester.userId && caseItem.moduleId === moduleStat.moduleId)
       .sort((a, b) => {
         if (a.moduleSortOrder !== b.moduleSortOrder) return a.moduleSortOrder - b.moduleSortOrder;
         if (a.caseSortOrder !== b.caseSortOrder) return a.caseSortOrder - b.caseSortOrder;
         return a.id - b.id;
       });
+  };
+
+  const getSummaryModuleCases = (moduleId: number, targetCategory: 'function' | 'stress') => {
+    return selectedProject.cases
+      .filter(caseItem => caseItem.moduleId === moduleId && matchesKanbanCategory(caseItem.testCategory, targetCategory))
+      .sort((a, b) => {
+        if (a.caseSortOrder !== b.caseSortOrder) return a.caseSortOrder - b.caseSortOrder;
+        return a.id - b.id;
+      });
+  };
+
+  const openKanbanAssignmentDialog = (
+    level: 'module' | 'case',
+    targetId: number,
+    name: string,
+    testerName?: string,
+  ) => {
+    setAssignmentError(null);
+    setKanbanAssigningTarget({ level, targetId, name, testerName, userId: '' });
+  };
+
+  const handleConfirmKanbanAssignment = async () => {
+    if (!kanbanAssigningTarget || !kanbanAssigningTarget.userId || !onAssignTarget) return;
+    setAssigningFromKanban(true);
+    setAssignmentError(null);
+    try {
+      await onAssignTarget(
+        kanbanAssigningTarget.level,
+        kanbanAssigningTarget.targetId,
+        Number(kanbanAssigningTarget.userId),
+      );
+      setKanbanAssigningTarget(null);
+    } catch (error) {
+      setAssignmentError(error instanceof Error ? error.message : '分配失败');
+    } finally {
+      setAssigningFromKanban(false);
+    }
   };
 
   const getProjectJiraGroups = () => {
@@ -5823,6 +6413,142 @@ function ProjectExecutionSummary({
       .filter((name): name is string => Boolean(name))
   )).sort((a, b) => a.localeCompare(b, 'zh-CN'));
 
+  const renderProjectSummarySection = (
+    title: string,
+    targetCategory: 'function' | 'stress',
+    summary: { total: number; completed: number; rate: number },
+    emptyText: string,
+  ) => {
+    const modules = progressModulesByCategory[targetCategory];
+    const visibleModules = showOnlyIncompleteModules
+      ? modules.filter(moduleStat => moduleStat.incomplete > 0)
+      : modules;
+
+    return (
+      <div className="space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <h5 className="text-sm font-semibold" style={{ color: '#1F2937' }}>{title}</h5>
+            <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#EFF6FF', color: '#1D4ED8' }}>
+              {summary.rate}%
+            </span>
+          </div>
+          <div className="text-xs" style={{ color: '#64748B' }}>
+            完成 {summary.completed}/{summary.total}
+          </div>
+        </div>
+        <div className="h-2 rounded-sm overflow-hidden" style={{ backgroundColor: '#E2E8F0' }}>
+          <div className="h-full rounded-sm" style={{ width: `${summary.rate}%`, backgroundColor: getCompletionColor(summary.rate) }} />
+        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+          {visibleModules.map(moduleStat => {
+            const moduleRowKey = moduleStat.key;
+            const isModuleExpanded = expandedModuleKey === moduleRowKey;
+            const moduleCases = getSummaryModuleCases(moduleStat.moduleId, targetCategory);
+            return (
+              <div
+                key={moduleRowKey}
+                className="rounded-md border px-3 py-2 cursor-pointer"
+                style={{ borderColor: isModuleExpanded ? '#93C5FD' : '#E2E8F0', backgroundColor: isModuleExpanded ? '#F8FBFF' : '#FFFFFF' }}
+                onClick={() => setExpandedModuleKey(isModuleExpanded ? null : moduleRowKey)}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="min-w-0 text-left flex items-center gap-1.5 flex-1">
+                        <span className="text-[10px]" style={{ color: '#64748B' }}>{isModuleExpanded ? '▼' : '▶'}</span>
+                        <span className="text-xs font-semibold truncate" style={{ color: '#0F172A' }}>{moduleStat.moduleName}</span>
+                      </div>
+                      {isManager && (
+                        <button
+                          type="button"
+                          className="flex-shrink-0 p-0.5 rounded hover:bg-purple-50"
+                          title="统一分配模块"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openKanbanAssignmentDialog('module', moduleStat.moduleId, moduleStat.moduleName, moduleStat.testerNames.join('、'));
+                          }}
+                        >
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                        </button>
+                      )}
+                    </div>
+                    <div className="text-[11px] mt-1 flex flex-wrap gap-x-3 gap-y-1" style={{ color: '#64748B' }}>
+                      <span>完成 {moduleStat.completed}/{moduleStat.total}</span>
+                      <span>执行者：{moduleStat.testerNames.join('、') || '未分配'}</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-shrink-0 items-center gap-2">
+                    <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#F1F5F9', color: '#334155', minWidth: '48px', textAlign: 'center' }}>{moduleStat.rate}%</span>
+                    <button type="button" onClick={(e) => { e.stopPropagation(); onNavigateTreeNode('module', moduleStat.moduleId); }} className="text-xs px-2 py-0.5 rounded border hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#475569' }}>
+                      定位
+                    </button>
+                  </div>
+                </div>
+                <div className="h-2 rounded-sm overflow-hidden mt-2" style={{ backgroundColor: '#E2E8F0' }}>
+                  <div className="h-full rounded-sm" style={{ width: `${moduleStat.rate}%`, backgroundColor: getCompletionColor(moduleStat.rate) }} />
+                </div>
+                {isModuleExpanded && (
+                  <div className="mt-3 border-t pt-2 space-y-1.5" style={{ borderColor: '#E2E8F0' }}>
+                    {moduleCases.length > 0 ? moduleCases.map(caseItem => {
+                      const statusMeta = getCaseStatusMeta(caseItem.testResult);
+                      const priorityMeta = getCasePriorityMeta(caseItem.priority);
+                      const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
+                      return (
+                        <div key={caseItem.id} className="rounded px-2 py-2" style={{ backgroundColor: '#FFFFFF' }}>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>{statusMeta.label}</span>
+                            <span
+                              className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border flex-shrink-0"
+                              style={{
+                                color: priorityMeta.color,
+                                backgroundColor: priorityMeta.backgroundColor,
+                                borderColor: priorityMeta.borderColor,
+                              }}
+                            >
+                              {priorityMeta.label}
+                            </span>
+                            <span className="text-xs truncate flex-1 min-w-0" style={{ color: '#334155' }} title={caseTitle}>{caseTitle}</span>
+                            <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: '#8B5CF6', backgroundColor: '#F5F3FF' }}>
+                              {caseItem.testerName || '未分配'}
+                            </span>
+                            {isManager && (
+                              <button
+                                type="button"
+                                className="flex-shrink-0 p-0.5 rounded hover:bg-purple-50"
+                                title={caseItem.testerName ? `重新分配 (${caseItem.testerName})` : '分配测试者'}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openKanbanAssignmentDialog('case', caseItem.id, caseTitle, caseItem.testerName);
+                                }}
+                              >
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                              </button>
+                            )}
+                            <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
+                              详情
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }) : (
+                      <div className="text-xs px-2 py-2" style={{ color: '#94A3B8' }}>暂无用例</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+          {visibleModules.length === 0 && (
+            <div className="rounded-md border px-4 py-6 text-sm text-center xl:col-span-2" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
+              {emptyText}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="p-5">
       <div className="rounded-md border overflow-hidden" style={{ borderColor: '#DDE3EA', backgroundColor: '#FFFFFF' }}>
@@ -5830,21 +6556,48 @@ function ProjectExecutionSummary({
           <div className="space-y-4">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="flex-1 min-w-[320px]">
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-base font-bold" style={{ color: '#1F2937' }}>{selectedProject.name}</h3>
-                {isHighPriorityMode && (
-                  <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
-                    High
+                  {isHighPriorityMode && (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ backgroundColor: '#FEF2F2', color: '#DC2626' }}>
+                      High
+                    </span>
+                  )}
+                  <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#EEF6FF', color: '#0369A1' }}>
+                    {selectedProject.testers.length} 位执行者
                   </span>
-                )}
-                <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#EEF6FF', color: '#0369A1' }}>
-                  {selectedProject.testers.length} 位执行者
-                </span>
-                <button
-                  onClick={() => onNavigateTreeNode('project', selectedProject.id)}
-                  className="text-xs px-2 py-0.5 rounded border hover:bg-white"
-                  style={{ borderColor: '#CBD5E1', color: '#475569' }}
-                >
+                  <button
+                    type="button"
+                    onClick={() => setProjectProgressViewMode('project')}
+                    className="px-3 py-1 rounded border text-xs transition-colors"
+                    style={{
+                      borderColor: projectProgressViewMode === 'project' ? '#0073E6' : '#CBD5E1',
+                      backgroundColor: projectProgressViewMode === 'project' ? '#F0F7FF' : '#FFFFFF',
+                      color: projectProgressViewMode === 'project' ? '#0073E6' : '#475569',
+                    }}
+                  >
+                    项目进度
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProjectProgressViewMode('tester');
+                      setCategoryFilter('all');
+                    }}
+                    className="px-3 py-1 rounded border text-xs transition-colors"
+                    style={{
+                      borderColor: projectProgressViewMode === 'tester' ? '#0073E6' : '#CBD5E1',
+                      backgroundColor: projectProgressViewMode === 'tester' ? '#F0F7FF' : '#FFFFFF',
+                      color: projectProgressViewMode === 'tester' ? '#0073E6' : '#475569',
+                    }}
+                  >
+                    测试者进度
+                  </button>
+                  <button
+                    onClick={() => onNavigateTreeNode('project', selectedProject.id)}
+                    className="text-xs px-2 py-0.5 rounded border hover:bg-white"
+                    style={{ borderColor: '#CBD5E1', color: '#475569' }}
+                  >
                     定位项目
                   </button>
                 </div>
@@ -5902,31 +6655,6 @@ function ProjectExecutionSummary({
                 <span className="text-xs px-2 py-1 rounded" style={{ backgroundColor: '#F3F4F6', color: '#6B7280' }}>
                   未完成 {selectedProject.incomplete}
                 </span>
-              </div>
-            </div>
-            <div className="rounded-xl border px-4 py-4" style={{ borderColor: '#D6E4F5', backgroundColor: '#FFFFFF' }}>
-              <div className="flex items-center justify-between gap-4 mb-3">
-                <div>
-                  <div className="text-sm font-semibold" style={{ color: '#1F2937' }}>总用例执行进度</div>
-                  <div className="text-xs mt-1" style={{ color: '#64748B' }}>
-                    已完成 {selectedProject.completed} / 总用例 {selectedProject.total}
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-3xl font-bold leading-none" style={{ color: getCompletionColor(selectedProject.completionRate) }}>
-                    {selectedProject.completionRate}%
-                  </div>
-                  <div className="text-[11px] mt-1" style={{ color: '#94A3B8' }}>整体完成率</div>
-                </div>
-              </div>
-              <div className="h-5 rounded-full overflow-hidden shadow-inner" style={{ backgroundColor: '#E2E8F0' }}>
-                <div
-                  className="h-full rounded-full"
-                  style={{
-                    width: `${selectedProject.completionRate}%`,
-                    background: `linear-gradient(90deg, ${getCompletionColor(selectedProject.completionRate)} 0%, ${getCompletionColor(selectedProject.completionRate)}CC 100%)`,
-                  }}
-                />
               </div>
             </div>
           </div>
@@ -6064,147 +6792,292 @@ function ProjectExecutionSummary({
             </div>
           </div>
 
-          <div className="flex items-center justify-between mb-3">
-            <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>执行者与二级目录进度</h4>
-            <div className="flex flex-wrap items-center gap-2">
-              <select
-                value={effectiveTesterFilter}
-                onChange={(e) => handleTesterFilterChange(e.target.value)}
-                className="text-xs px-2 py-1.5 border rounded"
-                style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
-              >
-                <option value="all">全部执行者</option>
-                {selectedProject.testers.map(tester => (
-                  <option key={tester.userId} value={String(tester.userId)}>{tester.username}</option>
-                ))}
-              </select>
-              <select
-                value={showOnlyIncompleteModules ? 'incomplete' : 'all'}
-                onChange={(e) => setShowOnlyIncompleteModules(e.target.value === 'incomplete')}
-                className="text-xs px-2 py-1.5 border rounded min-w-[148px]"
-                style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
-              >
-                <option value="all">查看全部</option>
-                <option value="incomplete">{isHighPriorityMode ? '只看高优先级未完成' : '只看未完成'}</option>
-              </select>
-            </div>
-          </div>
           <div className="space-y-4">
-            {visibleTesters.map(tester => {
-              return (
-                <div key={tester.userId} className="rounded-md border" style={{ borderColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
-                  <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr]">
-                    <div className="p-4 border-b lg:border-b-0 lg:border-r" style={{ borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' }}>
-                      <div className="flex items-start justify-between gap-3 lg:block">
-                        <div>
-                          <div className="text-sm font-semibold" style={{ color: '#0F172A' }}>{tester.username}</div>
-                          <div className="text-xs mt-1 leading-5" style={{ color: '#64748B' }}>
-                            完成 {tester.completed}/{tester.total}
+          {projectProgressViewMode === 'tester' ? (
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>执行者与二级目录进度</h4>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value as 'all' | 'function' | 'stress')}
+                    className="text-xs px-2 py-1.5 border rounded min-w-[148px]"
+                    style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+                  >
+                    <option value="all">全部测试类别</option>
+                    <option value="function">只看功能测试</option>
+                    <option value="stress">只看压测</option>
+                  </select>
+                  <select
+                    value={effectiveTesterFilter}
+                    onChange={(e) => handleTesterFilterChange(e.target.value)}
+                    className="text-xs px-2 py-1.5 border rounded"
+                    style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+                  >
+                    <option value="all">全部执行者</option>
+                    {progressTesters.map(tester => (
+                      <option key={tester.userId} value={String(tester.userId)}>{tester.username}</option>
+                    ))}
+                  </select>
+                  <select
+                    value={showOnlyIncompleteModules ? 'incomplete' : 'all'}
+                    onChange={(e) => setShowOnlyIncompleteModules(e.target.value === 'incomplete')}
+                    className="text-xs px-2 py-1.5 border rounded min-w-[148px]"
+                    style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+                  >
+                    <option value="all">查看全部</option>
+                    <option value="incomplete">{isHighPriorityMode ? '只看高优先级未完成' : '只看未完成'}</option>
+                  </select>
+                </div>
+              </div>
+              <div className="space-y-4">
+                {visibleTesters.map(tester => {
+                  return (
+                    <div key={tester.userId} className="rounded-md border" style={{ borderColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
+                      <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr]">
+                        <div className="p-4 border-b lg:border-b-0 lg:border-r" style={{ borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' }}>
+                          <div className="flex items-start justify-between gap-3 lg:block">
+                            <div>
+                              <div className="text-sm font-semibold" style={{ color: '#0F172A' }}>{tester.username}</div>
+                              <div className="text-xs mt-1 leading-5" style={{ color: '#64748B' }}>
+                                完成 {tester.completed}/{tester.total}
+                              </div>
+                              <div className="text-[11px] leading-5" style={{ color: '#94A3B8' }}>
+                                失败 {tester.failed} · 阻塞 {tester.blocked} · 未完成 {tester.incomplete}
+                              </div>
+                            </div>
+                            <div className="text-right lg:text-left lg:mt-4">
+                              <div className="text-2xl font-bold leading-none" style={{ color: getCompletionColor(tester.completionRate) }}>
+                                {tester.completionRate}%
+                              </div>
+                              <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>总进度</div>
+                            </div>
                           </div>
-                          <div className="text-[11px] leading-5" style={{ color: '#94A3B8' }}>
-                            失败 {tester.failed} · 阻塞 {tester.blocked} · 未完成 {tester.incomplete}
+                          <div className="h-4 rounded-sm overflow-hidden mt-4" style={{ backgroundColor: '#E2E8F0' }}>
+                            <div className="h-full rounded-sm" style={{ width: `${tester.completionRate}%`, backgroundColor: getCompletionColor(tester.completionRate) }} />
                           </div>
                         </div>
-                        <div className="text-right lg:text-left lg:mt-4">
-                          <div className="text-2xl font-bold leading-none" style={{ color: getCompletionColor(tester.completionRate) }}>
-                            {tester.completionRate}%
-                          </div>
-                          <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>总进度</div>
-                        </div>
-                      </div>
-                      <div className="h-4 rounded-sm overflow-hidden mt-4" style={{ backgroundColor: '#E2E8F0' }}>
-                        <div className="h-full rounded-sm" style={{ width: `${tester.completionRate}%`, backgroundColor: getCompletionColor(tester.completionRate) }} />
-                      </div>
-                    </div>
-                    <div className="p-4">
-                      <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
-                        {getVisibleModules(tester).length > 0 ? getVisibleModules(tester).map(moduleStat => {
-                          const moduleRowKey = `${tester.userId}-${moduleStat.key}`;
-                          const isModuleExpanded = expandedModuleKey === moduleRowKey;
-                          const moduleCases = getModuleCases(tester, moduleStat);
-                          return (
-                            <div key={moduleRowKey} className="rounded-md border px-3 py-2" style={{ borderColor: isModuleExpanded ? '#93C5FD' : '#E2E8F0', backgroundColor: isModuleExpanded ? '#F8FBFF' : '#FFFFFF' }}>
-                              <div className="flex items-start justify-between gap-2">
-                                <button type="button" onClick={() => setExpandedModuleKey(isModuleExpanded ? null : moduleRowKey)} className="min-w-0 text-left flex-1">
-                                  <div className="flex items-center gap-1.5">
-                                    <span className="text-[10px]" style={{ color: '#64748B' }}>{isModuleExpanded ? '▼' : '▶'}</span>
-                                    <span className="text-xs font-semibold truncate" style={{ color: '#0F172A' }}>{moduleStat.moduleName}</span>
-                                  </div>
-                                  <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>完成 {moduleStat.completed}/{moduleStat.total} · 未完成 {moduleStat.incomplete}</div>
-                                </button>
-                                <div className="flex flex-shrink-0 items-center gap-1">
-                                  <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#F1F5F9', color: '#334155' }}>{moduleStat.completionRate}%</span>
-                                  <button type="button" onClick={() => onNavigateTreeNode('module', moduleStat.moduleId)} className="text-xs px-2 py-0.5 rounded border hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#475569' }}>
-                                    定位
-                                  </button>
-                                </div>
-                              </div>
-                              <div className="h-2 rounded-sm overflow-hidden mt-2" style={{ backgroundColor: '#E2E8F0' }} title={getModuleTooltipText(tester, moduleStat)}>
-                                <div className="h-full rounded-sm" style={{ width: `${moduleStat.completionRate}%`, backgroundColor: getCompletionColor(moduleStat.completionRate) }} />
-                              </div>
-                              {isModuleExpanded && (
-                                <div className="mt-3 border-t pt-2 space-y-1.5" style={{ borderColor: '#E2E8F0' }}>
-                                  {moduleCases.length > 0 ? moduleCases.map(caseItem => {
-                                    const statusMeta = getCaseStatusMeta(caseItem.testResult);
-                                    const priorityMeta = getCasePriorityMeta(caseItem.priority);
-                                    const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
-                                    return (
-                                      <div key={caseItem.id} className="flex items-center gap-2 rounded px-2 py-1.5" style={{ backgroundColor: '#FFFFFF' }}>
-                                        <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>{statusMeta.label}</span>
-                                        <span className="text-xs truncate flex-1" style={{ color: '#334155' }} title={caseTitle}>{caseTitle}</span>
-                                        <span
-                                          className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border flex-shrink-0"
-                                          style={{
-                                            color: priorityMeta.color,
-                                            backgroundColor: priorityMeta.backgroundColor,
-                                            borderColor: priorityMeta.borderColor,
-                                          }}
-                                          title={`优先级：${caseItem.priority || '未设置'}`}
-                                        >
-                                          {caseItem.priority === 'High' && (
-                                            <svg width="12" height="12" viewBox="0 0 16 16" fill="#DC2626"><path d="M8 2l5 5H3l5-5z"/><rect x="6" y="7" width="4" height="6" rx="0.5"/></svg>
-                                          )}
-                                          {caseItem.priority === 'Middle' && (
-                                            <svg width="12" height="12" viewBox="0 0 16 16" fill="#D97706"><rect x="2" y="6" width="12" height="4" rx="1"/></svg>
-                                          )}
-                                          {caseItem.priority === 'Low' && (
-                                            <svg width="12" height="12" viewBox="0 0 16 16" fill="#2563EB"><path d="M8 14l5-5H3l5 5z"/><rect x="6" y="3" width="4" height="6" rx="0.5"/></svg>
-                                          )}
-                                          {priorityMeta.label}
-                                        </span>
-                                        <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
-                                          详情
-                                        </button>
+                        <div className="p-4">
+                          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+                            {getVisibleModules(tester).length > 0 ? getVisibleModules(tester).map(moduleStat => {
+                              const moduleRowKey = `${tester.userId}-${moduleStat.key}`;
+                              const isModuleExpanded = expandedModuleKey === moduleRowKey;
+                              const moduleCases = getModuleCases(tester, moduleStat);
+                              return (
+                                <div
+                                  key={moduleRowKey}
+                                  className="rounded-md border px-3 py-2 cursor-pointer"
+                                  style={{ borderColor: isModuleExpanded ? '#93C5FD' : '#E2E8F0', backgroundColor: isModuleExpanded ? '#F8FBFF' : '#FFFFFF' }}
+                                  onClick={() => setExpandedModuleKey(isModuleExpanded ? null : moduleRowKey)}
+                                >
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-1.5 min-w-0">
+                                        <div className="min-w-0 text-left flex items-center gap-1.5 flex-1">
+                                          <span className="text-[10px]" style={{ color: '#64748B' }}>{isModuleExpanded ? '▼' : '▶'}</span>
+                                          <span className="text-xs font-semibold truncate" style={{ color: '#0F172A' }}>{moduleStat.moduleName}</span>
+                                        </div>
+                                        {isManager && (
+                                          <button
+                                            type="button"
+                                            className="flex-shrink-0 p-0.5 rounded hover:bg-purple-50"
+                                            title={tester.username ? `统一分配模块 (${tester.username})` : '统一分配模块'}
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              openKanbanAssignmentDialog('module', moduleStat.moduleId, moduleStat.moduleName, tester.username);
+                                            }}
+                                          >
+                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                                          </button>
+                                        )}
                                       </div>
-                                    );
-                                  }) : (
-                                    <div className="text-xs px-2 py-2" style={{ color: '#94A3B8' }}>暂无用例</div>
+                                      <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>完成 {moduleStat.completed}/{moduleStat.total}</div>
+                                    </div>
+                                    <div className="flex flex-shrink-0 items-center gap-2">
+                                      <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#F1F5F9', color: '#334155', minWidth: '48px', textAlign: 'center' }}>{moduleStat.completionRate}%</span>
+                                      <button type="button" onClick={(e) => { e.stopPropagation(); onNavigateTreeNode('module', moduleStat.moduleId); }} className="text-xs px-2 py-0.5 rounded border hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#475569' }}>
+                                        定位
+                                      </button>
+                                    </div>
+                                  </div>
+                                  <div className="h-2 rounded-sm overflow-hidden mt-2" style={{ backgroundColor: '#E2E8F0' }} title={getModuleTooltipText(tester, moduleStat)}>
+                                    <div className="h-full rounded-sm" style={{ width: `${moduleStat.completionRate}%`, backgroundColor: getCompletionColor(moduleStat.completionRate) }} />
+                                  </div>
+                                  {isModuleExpanded && (
+                                    <div className="mt-3 border-t pt-2 space-y-1.5" style={{ borderColor: '#E2E8F0' }}>
+                                      {moduleCases.length > 0 ? moduleCases.map(caseItem => {
+                                        const statusMeta = getCaseStatusMeta(caseItem.testResult);
+                                        const priorityMeta = getCasePriorityMeta(caseItem.priority);
+                                        const caseTitle = [caseItem.caseNo, caseItem.caseName].filter(Boolean).join(' ') || '未命名用例';
+                                        return (
+                                          <div key={caseItem.id} className="rounded px-2 py-2" style={{ backgroundColor: '#FFFFFF' }}>
+                                            <div className="flex items-center gap-2 min-w-0">
+                                              <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: statusMeta.color, backgroundColor: statusMeta.backgroundColor }}>{statusMeta.label}</span>
+                                              <span
+                                                className="inline-flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border flex-shrink-0"
+                                                style={{
+                                                  color: priorityMeta.color,
+                                                  backgroundColor: priorityMeta.backgroundColor,
+                                                  borderColor: priorityMeta.borderColor,
+                                                }}
+                                                title={`优先级：${caseItem.priority || '未设置'}`}
+                                              >
+                                                {caseItem.priority === 'High' && (
+                                                  <svg width="12" height="12" viewBox="0 0 16 16" fill="#DC2626"><path d="M8 2l5 5H3l5-5z"/><rect x="6" y="7" width="4" height="6" rx="0.5"/></svg>
+                                                )}
+                                                {caseItem.priority === 'Middle' && (
+                                                  <svg width="12" height="12" viewBox="0 0 16 16" fill="#D97706"><rect x="2" y="6" width="12" height="4" rx="1"/></svg>
+                                                )}
+                                                {caseItem.priority === 'Low' && (
+                                                  <svg width="12" height="12" viewBox="0 0 16 16" fill="#2563EB"><path d="M8 14l5-5H3l5 5z"/><rect x="6" y="3" width="4" height="6" rx="0.5"/></svg>
+                                                )}
+                                                {priorityMeta.label}
+                                              </span>
+                                              <span className="text-xs truncate flex-1 min-w-0" style={{ color: '#334155' }} title={caseTitle}>{caseTitle}</span>
+                                              {isManager && (
+                                                <button
+                                                  type="button"
+                                                  className="flex-shrink-0 p-0.5 rounded hover:bg-purple-50"
+                                                  title={caseItem.testerName ? `重新分配 (${caseItem.testerName})` : '分配测试者'}
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    openKanbanAssignmentDialog('case', caseItem.id, caseTitle, caseItem.testerName);
+                                                  }}
+                                                >
+                                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                                                </button>
+                                              )}
+                                              <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
+                                                详情
+                                              </button>
+                                            </div>
+                                          </div>
+                                        );
+                                      }) : (
+                                        <div className="text-xs px-2 py-2" style={{ color: '#94A3B8' }}>暂无用例</div>
+                                      )}
+                                    </div>
                                   )}
                                 </div>
-                              )}
-                            </div>
-                          );
-                        }) : (
-                          <div className="text-xs" style={{ color: '#9CA3AF' }}>
-                            {showOnlyIncompleteModules ? '该执行者当前没有未完成目录' : isHighPriorityMode ? '该执行者暂无高优先级用例' : '该执行者暂无用例'}
+                              );
+                            }) : (
+                              <div className="text-xs" style={{ color: '#9CA3AF' }}>
+                                {showOnlyIncompleteModules ? '该执行者当前没有未完成目录' : isHighPriorityMode ? '该执行者暂无高优先级用例' : '该执行者暂无用例'}
+                              </div>
+                            )}
                           </div>
-                        )}
+                        </div>
                       </div>
                     </div>
+                  );
+                })}
+                {visibleTesters.length === 0 && (
+                  <div className="rounded-md border px-4 py-6 text-sm text-center" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
+                    {effectiveTesterFilter === 'all'
+                      ? (filteredProgressCases.length === 0
+                        ? (categoryFilter === 'function'
+                          ? '当前没有功能测试用例'
+                          : categoryFilter === 'stress'
+                            ? '当前没有压测用例'
+                            : (isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者'))
+                        : (isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者'))
+                      : '当前筛选条件下暂无执行者任务'}
                   </div>
-                </div>
-              );
-            })}
-            {visibleTesters.length === 0 && (
-              <div className="rounded-md border px-4 py-6 text-sm text-center" style={{ borderColor: '#E2E8F0', color: '#94A3B8' }}>
-                {effectiveTesterFilter === 'all'
-                  ? (isHighPriorityMode ? '暂无高优先级执行者' : '暂无执行者')
-                  : '当前筛选条件下暂无执行者任务'}
+                )}
               </div>
-            )}
+            </>
+          ) : (
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-sm font-semibold" style={{ color: '#1F2937' }}>项目进度汇总</h4>
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    value={showOnlyIncompleteModules ? 'incomplete' : 'all'}
+                    onChange={(e) => setShowOnlyIncompleteModules(e.target.value === 'incomplete')}
+                    className="text-xs px-2 py-1.5 border rounded min-w-[148px]"
+                    style={{ borderColor: '#D1D5DB', color: '#374151', backgroundColor: '#FFFFFF' }}
+                  >
+                    <option value="all">查看全部模块</option>
+                    <option value="incomplete">{isHighPriorityMode ? '只看高优先级未完成模块' : '只看未完成模块'}</option>
+                  </select>
+                </div>
+              </div>
+              <div className="space-y-5">
+                {renderProjectSummarySection(
+                  '功能测试进度汇总',
+                  'function',
+                  progressSummaryByCategory.function,
+                  '当前没有功能测试进度数据',
+                )}
+                {renderProjectSummarySection(
+                  '压测测试进度汇总',
+                  'stress',
+                  progressSummaryByCategory.stress,
+                  '当前没有压测测试进度数据',
+                )}
+              </div>
+            </>
+          )}
           </div>
         </div>
       </div>
+      {kanbanAssigningTarget && isManager && createPortal(
+        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }}>
+          <div className="bg-white rounded-lg shadow-xl p-5" style={{ minWidth: '360px', maxWidth: '440px' }}>
+            <div className="flex items-center gap-2 mb-3">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+              <span className="font-bold text-sm" style={{ color: '#333' }}>
+                分配测试者 - {kanbanAssigningTarget.name}
+              </span>
+            </div>
+            <p className="text-xs mb-3" style={{ color: '#666' }}>
+              {kanbanAssigningTarget.level === 'module'
+                ? '将整个模块统一分配给测试者，其下所有用例将自动获得编辑权限'
+                : '将当前用例分配给测试者，支持单独指定执行者'}
+            </p>
+            {kanbanAssigningTarget.testerName && kanbanAssigningTarget.testerName !== '未分配' && (
+              <div className="mb-3 px-3 py-2 rounded text-xs" style={{ backgroundColor: '#F5F3FF', color: '#8B5CF6', border: '1px solid #DDD6FE' }}>
+                当前测试者: {kanbanAssigningTarget.testerName}
+              </div>
+            )}
+            {assignmentError && (
+              <div className="mb-3 px-3 py-2 rounded text-xs" style={{ backgroundColor: '#FEF2F2', color: '#DC2626', border: '1px solid #FECACA' }}>
+                {assignmentError}
+              </div>
+            )}
+            <select
+              value={kanbanAssigningTarget.userId}
+              onChange={(e) => setKanbanAssigningTarget({ ...kanbanAssigningTarget, userId: e.target.value })}
+              className="w-full px-3 py-2 border rounded-md text-sm mb-4"
+              style={{ borderColor: '#D1D5DB', color: '#374151' }}
+            >
+              <option value="">选择测试者...</option>
+              {allUsers.map(u => (
+                <option key={u.id} value={String(u.id)}>{u.username}</option>
+              ))}
+            </select>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => { setKanbanAssigningTarget(null); setAssignmentError(null); }}
+                className="px-4 py-1.5 text-sm rounded border hover:bg-gray-50 transition-colors"
+                style={{ borderColor: '#EEEEEE', color: '#666' }}
+                disabled={assigningFromKanban}
+              >
+                取消
+              </button>
+              <button
+                onClick={() => { void handleConfirmKanbanAssignment(); }}
+                disabled={!kanbanAssigningTarget.userId || assigningFromKanban}
+                className="px-4 py-1.5 text-sm rounded text-white transition-colors disabled:opacity-50"
+                style={{ backgroundColor: '#8B5CF6' }}
+              >
+                {assigningFromKanban ? '分配中...' : '确认分配'}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 }
@@ -6761,6 +7634,7 @@ function GanttKanbanView({
   onClose,
   onNavigateCase,
   onNavigateTreeNode,
+  onAssignTarget,
   onRefresh,
 }: {
   data: KanbanGanttData | null;
@@ -6771,6 +7645,7 @@ function GanttKanbanView({
   onClose: () => void;
   onNavigateCase: (caseId: number) => void;
   onNavigateTreeNode: (type: 'project' | 'module', dbId: number) => void;
+  onAssignTarget: (level: 'module' | 'case', targetId: number, userId: number) => Promise<void>;
   onRefresh: () => void;
 }) {
   const defaultStartDate = (() => {
@@ -7440,6 +8315,8 @@ function GanttKanbanView({
             isHighPriorityMode={isHighPriorityMode}
             onNavigateCase={onNavigateCase}
             onNavigateTreeNode={onNavigateTreeNode}
+            isManager={isManager}
+            onAssignTarget={onAssignTarget}
             allUsers={data?.allUsers?.map(user => ({ id: user.id, username: user.username, role: 'user', created_at: '' })) || []}
           />
         )}
