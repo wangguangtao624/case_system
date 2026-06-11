@@ -945,7 +945,10 @@ export default function DashboardPage() {
               onSelectCase={handleSelectCase}
               onSelectProject={(projectId: number) => {
                 setSelectedNodeId(`project-${projectId}`);
-                fetchProjectOverview(projectId, 'all', 'all');
+                const overviewTesterFilter = testerFilter === 'my' && user
+                  ? String(user.id)
+                  : 'all';
+                fetchProjectOverview(projectId, 'all', overviewTesterFilter);
               }}
               onSelectProjectSpace={handleSelectProjectSpace}
               onTreeChange={() => loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter)}
@@ -6009,6 +6012,7 @@ function ProjectExecutionSummary({
   const [assigningFromKanban, setAssigningFromKanban] = useState(false);
   const [assignmentError, setAssignmentError] = useState<string | null>(null);
 
+  const normalizedTesterFilter = testerFilter ?? 'all';
   const effectiveTesterFilter = testerFilter ?? localTesterFilter;
   const handleTesterFilterChange = onTesterFilterChange ?? setLocalTesterFilter;
 
@@ -6016,9 +6020,11 @@ function ProjectExecutionSummary({
     setKanbanAssigningTarget(null);
     setAssigningFromKanban(false);
     setAssignmentError(null);
-    setProjectProgressViewMode('project');
+    setProjectProgressViewMode(
+      normalizedTesterFilter !== 'all' ? 'tester' : 'project',
+    );
     setCategoryFilter('all');
-  }, [selectedProject.id, isHighPriorityMode]);
+  }, [selectedProject.id, isHighPriorityMode, normalizedTesterFilter]);
 
   useEffect(() => {
     const links = Array.from(new Set(
