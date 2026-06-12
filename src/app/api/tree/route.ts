@@ -136,8 +136,9 @@ export async function GET(request: NextRequest) {
           });
         }
 
-        // Skip module if it has no cases after filtering
-        if (filteredCaseIds && caseNodes.length === 0) continue;
+        // Hide empty modules in the tree.
+        // This also prevents sheets whose cases were all marked NA during import from showing up.
+        if (caseNodes.length === 0) continue;
 
         // Aggregate resolved tester names from child cases for module display
         const moduleTesterNames = [...new Set(

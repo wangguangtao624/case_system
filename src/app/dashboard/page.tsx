@@ -947,7 +947,7 @@ export default function DashboardPage() {
                 setSelectedNodeId(`project-${projectId}`);
                 const overviewTesterFilter = testerFilter === 'my' && user
                   ? String(user.id)
-                  : 'all';
+                  : testerFilter || 'all';
                 fetchProjectOverview(projectId, 'all', overviewTesterFilter);
               }}
               onSelectProjectSpace={handleSelectProjectSpace}
@@ -6024,7 +6024,7 @@ function ProjectExecutionSummary({
       normalizedTesterFilter !== 'all' ? 'tester' : 'project',
     );
     setCategoryFilter('all');
-  }, [selectedProject.id, isHighPriorityMode, normalizedTesterFilter]);
+  }, [selectedProject.id, isHighPriorityMode]);
 
   useEffect(() => {
     const links = Array.from(new Set(

@@ -140,29 +140,24 @@ export async function POST(request: NextRequest) {
       const rows = XLSX.utils.sheet_to_json<Record<string, string>>(sheet, { defval: '' });
       if (rows.length === 0) continue;
 
-      // Find or create module by sheet name
+      // Find existing module by sheet name; if the whole sheet is NA/空数据, do not create an empty module
       const moduleRow = db.prepare('SELECT id FROM modules WHERE project_id = ? AND name = ?').get(projectId, sheetName) as { id: number } | undefined;
-      let moduleId: number;
+      let moduleId = moduleRow?.id ?? 0;
+      let moduleCreated = false;
 
-      if (moduleRow) {
-        moduleId = moduleRow.id;
-      } else {
-        const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM modules WHERE project_id = ?').get(projectId) as { m: number | null };
-        const result = db.prepare('INSERT INTO modules (project_id, name, sort_order) VALUES (?, ?, ?)').run(projectId, sheetName, (maxOrder.m || 0) + 1);
-        moduleId = Number(result.lastInsertRowid);
+      const existingCaseKeys = new Set<string>();
+      if (moduleId) {
+        // Prefer case_no for dedup because the same sheet can legitimately contain
+        // multiple cases with the same case_name but different identifiers.
+        const existingCases = db.prepare('SELECT case_no, case_name FROM cases WHERE module_id = ?').all(moduleId) as {
+          case_no: string | null;
+          case_name: string | null;
+        }[];
+        for (const existingCase of existingCases) {
+          const key = buildCaseDedupKey(existingCase.case_no, existingCase.case_name);
+          if (key) existingCaseKeys.add(key);
+        }
       }
-
-      // Prefer case_no for dedup because the same sheet can legitimately contain
-      // multiple cases with the same case_name but different identifiers.
-      const existingCases = db.prepare('SELECT case_no, case_name FROM cases WHERE module_id = ?').all(moduleId) as {
-        case_no: string | null;
-        case_name: string | null;
-      }[];
-      const existingCaseKeys = new Set(
-        existingCases
-          .map(c => buildCaseDedupKey(c.case_no, c.case_name))
-          .filter((key): key is string => !!key)
-      );
 
       // Parse column headers
       const firstRow = rows[0];
@@ -175,9 +170,7 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // Get sort order base
-      const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM cases WHERE module_id = ?').get(moduleId) as { m: number | null };
-      let sortOrder = (maxOrder.m || 0) + 1;
+      let sortOrder = 1;
 
       for (let i = 0; i < rows.length; i++) {
         const row = rows[i];
@@ -259,6 +252,17 @@ export async function POST(request: NextRequest) {
 
         // Insert case
         try {
+          if (!moduleId) {
+            const maxModuleOrder = db.prepare('SELECT MAX(sort_order) as m FROM modules WHERE project_id = ?').get(projectId) as { m: number | null };
+            const result = db.prepare('INSERT INTO modules (project_id, name, sort_order) VALUES (?, ?, ?)').run(projectId, sheetName, (maxModuleOrder.m || 0) + 1);
+            moduleId = Number(result.lastInsertRowid);
+            moduleCreated = true;
+            sortOrder = 1;
+          } else if (!moduleCreated && sortOrder === 1) {
+            const maxCaseOrder = db.prepare('SELECT MAX(sort_order) as m FROM cases WHERE module_id = ?').get(moduleId) as { m: number | null };
+            sortOrder = (maxCaseOrder.m || 0) + 1;
+          }
+
           db.prepare(`
             INSERT INTO cases (module_id, case_name, case_no, test_category, feature, trait, priority, test_env, test_device, pre_operation, step, expect_result, note, test_result, jira_link, fail_note, test_result_note, light, temperature, executor, sort_order)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
