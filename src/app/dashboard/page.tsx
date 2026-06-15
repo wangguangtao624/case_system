@@ -6024,7 +6024,7 @@ function ProjectExecutionSummary({
       normalizedTesterFilter !== 'all' ? 'tester' : 'project',
     );
     setCategoryFilter('all');
-  }, [selectedProject.id, isHighPriorityMode]);
+  }, [selectedProject.id]);
 
   useEffect(() => {
     const links = Array.from(new Set(
@@ -6429,23 +6429,88 @@ function ProjectExecutionSummary({
     const visibleModules = showOnlyIncompleteModules
       ? modules.filter(moduleStat => moduleStat.incomplete > 0)
       : modules;
+    const summaryTheme = targetCategory === 'function'
+      ? {
+        chipBackground: '#DBEAFE',
+        chipColor: '#1D4ED8',
+        cardBackground: 'linear-gradient(135deg, #EFF6FF 0%, #FFFFFF 72%)',
+        cardBorder: '#BFDBFE',
+        accent: '#2563EB',
+        accentSoft: '#DBEAFE',
+        label: '功能用例',
+      }
+      : {
+        chipBackground: '#DBEAFE',
+        chipColor: '#1D4ED8',
+        cardBackground: 'linear-gradient(135deg, #EFF6FF 0%, #FFFFFF 72%)',
+        cardBorder: '#BFDBFE',
+        accent: '#2563EB',
+        accentSoft: '#DBEAFE',
+        label: '压测用例',
+      };
+    const remaining = Math.max(summary.total - summary.completed, 0);
 
     return (
-      <div className="space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2">
-            <h5 className="text-sm font-semibold" style={{ color: '#1F2937' }}>{title}</h5>
-            <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: '#EFF6FF', color: '#1D4ED8' }}>
-              {summary.rate}%
-            </span>
+      <div
+        className="rounded-xl border px-4 py-4 shadow-sm space-y-4"
+        style={{
+          borderColor: summaryTheme.cardBorder,
+          background: summaryTheme.cardBackground,
+          boxShadow: '0 8px 18px rgba(15, 23, 42, 0.04)',
+        }}
+      >
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-flex h-2.5 w-2.5 rounded-full"
+                style={{ backgroundColor: summaryTheme.accent, boxShadow: `0 0 0 4px ${summaryTheme.accentSoft}` }}
+              />
+              <h5 className="text-sm font-semibold" style={{ color: '#1F2937' }}>{title}</h5>
+              <span className="text-[11px] px-2 py-0.5 rounded-full" style={{ backgroundColor: summaryTheme.chipBackground, color: summaryTheme.chipColor }}>
+                {summaryTheme.label}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2.5 py-1 rounded-full font-semibold" style={{ backgroundColor: '#FFFFFF', color: summaryTheme.accent, border: `1px solid ${summaryTheme.cardBorder}` }}>
+                完成率 {summary.rate}%
+              </span>
+            </div>
           </div>
-          <div className="text-xs" style={{ color: '#64748B' }}>
-            完成 {summary.completed}/{summary.total}
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 mt-4">
+            <div className="rounded-lg px-3 py-2" style={{ backgroundColor: '#FFFFFF', border: `1px solid ${summaryTheme.cardBorder}` }}>
+              <div className="text-[11px]" style={{ color: '#64748B' }}>总用例</div>
+              <div className="text-lg font-semibold" style={{ color: '#0F172A' }}>{summary.total}</div>
+            </div>
+            <div className="rounded-lg px-3 py-2" style={{ backgroundColor: '#FFFFFF', border: `1px solid ${summaryTheme.cardBorder}` }}>
+              <div className="text-[11px]" style={{ color: '#64748B' }}>已完成</div>
+              <div className="text-lg font-semibold" style={{ color: summaryTheme.accent }}>{summary.completed}</div>
+            </div>
+            <div className="rounded-lg px-3 py-2" style={{ backgroundColor: '#FFFFFF', border: `1px solid ${summaryTheme.cardBorder}` }}>
+              <div className="text-[11px]" style={{ color: '#64748B' }}>未完成</div>
+              <div className="text-lg font-semibold" style={{ color: '#475569' }}>{remaining}</div>
+            </div>
+            <div className="rounded-lg px-3 py-2" style={{ backgroundColor: '#FFFFFF', border: `1px solid ${summaryTheme.cardBorder}` }}>
+              <div className="text-[11px]" style={{ color: '#64748B' }}>完成情况</div>
+              <div className="text-lg font-semibold" style={{ color: '#0F172A' }}>
+                {summary.completed}/{summary.total}
+              </div>
+            </div>
           </div>
-        </div>
-        <div className="h-2 rounded-sm overflow-hidden" style={{ backgroundColor: '#E2E8F0' }}>
-          <div className="h-full rounded-sm" style={{ width: `${summary.rate}%`, backgroundColor: getCompletionColor(summary.rate) }} />
-        </div>
+          <div className="mt-4">
+            <div className="flex items-center justify-between text-[11px] mb-1.5" style={{ color: '#64748B' }}>
+              <span>整体进度</span>
+              <span>{summary.rate}%</span>
+            </div>
+            <div className="h-4 rounded-full overflow-hidden" style={{ backgroundColor: '#E2E8F0' }}>
+              <div
+                className="h-full rounded-full transition-all"
+                style={{
+                  width: `${summary.rate}%`,
+                  background: `linear-gradient(90deg, ${summaryTheme.accentSoft} 0%, ${summaryTheme.accent} 100%)`,
+                }}
+              />
+            </div>
+          </div>
         <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
           {visibleModules.map(moduleStat => {
             const moduleRowKey = moduleStat.key;
@@ -6468,14 +6533,14 @@ function ProjectExecutionSummary({
                       {isManager && (
                         <button
                           type="button"
-                          className="flex-shrink-0 p-0.5 rounded hover:bg-purple-50"
+                          className="flex-shrink-0 p-0.5 rounded hover:bg-blue-50"
                           title="统一分配模块"
                           onClick={(e) => {
                             e.stopPropagation();
                             openKanbanAssignmentDialog('module', moduleStat.moduleId, moduleStat.moduleName, moduleStat.testerNames.join('、'));
                           }}
                         >
-                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                         </button>
                       )}
                     </div>
@@ -6515,20 +6580,20 @@ function ProjectExecutionSummary({
                               {priorityMeta.label}
                             </span>
                             <span className="text-xs truncate flex-1 min-w-0" style={{ color: '#334155' }} title={caseTitle}>{caseTitle}</span>
-                            <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: '#8B5CF6', backgroundColor: '#F5F3FF' }}>
+                            <span className="text-[11px] px-1.5 py-0.5 rounded flex-shrink-0" style={{ color: '#1D4ED8', backgroundColor: '#DBEAFE' }}>
                               {caseItem.testerName || '未分配'}
                             </span>
                             {isManager && (
                               <button
                                 type="button"
-                                className="flex-shrink-0 p-0.5 rounded hover:bg-purple-50"
+                                className="flex-shrink-0 p-0.5 rounded hover:bg-blue-50"
                                 title={caseItem.testerName ? `重新分配 (${caseItem.testerName})` : '分配测试者'}
                                 onClick={(e) => {
                                   e.stopPropagation();
                                   openKanbanAssignmentDialog('case', caseItem.id, caseTitle, caseItem.testerName);
                                 }}
                               >
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                               </button>
                             )}
                             <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
@@ -6839,9 +6904,9 @@ function ProjectExecutionSummary({
               <div className="space-y-4">
                 {visibleTesters.map(tester => {
                   return (
-                    <div key={tester.userId} className="rounded-md border" style={{ borderColor: '#E2E8F0', backgroundColor: '#FFFFFF' }}>
+                    <div key={tester.userId} className="rounded-xl border shadow-sm overflow-hidden" style={{ borderColor: '#BFDBFE', backgroundColor: '#FFFFFF', boxShadow: '0 8px 18px rgba(15, 23, 42, 0.04)' }}>
                       <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr]">
-                        <div className="p-4 border-b lg:border-b-0 lg:border-r" style={{ borderColor: '#E2E8F0', backgroundColor: '#F8FAFC' }}>
+                        <div className="p-4 border-b lg:border-b-0 lg:border-r" style={{ borderColor: '#BFDBFE', background: 'linear-gradient(180deg, #EFF6FF 0%, #F8FAFC 100%)' }}>
                           <div className="flex items-start justify-between gap-3 lg:block">
                             <div>
                               <div className="text-sm font-semibold" style={{ color: '#0F172A' }}>{tester.username}</div>
@@ -6853,14 +6918,14 @@ function ProjectExecutionSummary({
                               </div>
                             </div>
                             <div className="text-right lg:text-left lg:mt-4">
-                              <div className="text-2xl font-bold leading-none" style={{ color: getCompletionColor(tester.completionRate) }}>
+                              <div className="text-2xl font-bold leading-none" style={{ color: '#2563EB' }}>
                                 {tester.completionRate}%
                               </div>
                               <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>总进度</div>
                             </div>
                           </div>
                           <div className="h-4 rounded-sm overflow-hidden mt-4" style={{ backgroundColor: '#E2E8F0' }}>
-                            <div className="h-full rounded-sm" style={{ width: `${tester.completionRate}%`, backgroundColor: getCompletionColor(tester.completionRate) }} />
+                            <div className="h-full rounded-sm" style={{ width: `${tester.completionRate}%`, background: 'linear-gradient(90deg, #93C5FD 0%, #2563EB 100%)' }} />
                           </div>
                         </div>
                         <div className="p-4">
@@ -6873,7 +6938,7 @@ function ProjectExecutionSummary({
                                 <div
                                   key={moduleRowKey}
                                   className="rounded-md border px-3 py-2 cursor-pointer"
-                                  style={{ borderColor: isModuleExpanded ? '#93C5FD' : '#E2E8F0', backgroundColor: isModuleExpanded ? '#F8FBFF' : '#FFFFFF' }}
+                                  style={{ borderColor: isModuleExpanded ? '#93C5FD' : '#DBEAFE', backgroundColor: isModuleExpanded ? '#F8FBFF' : '#FFFFFF' }}
                                   onClick={() => setExpandedModuleKey(isModuleExpanded ? null : moduleRowKey)}
                                 >
                                   <div className="flex items-start justify-between gap-2">
@@ -6886,28 +6951,28 @@ function ProjectExecutionSummary({
                                         {isManager && (
                                           <button
                                             type="button"
-                                            className="flex-shrink-0 p-0.5 rounded hover:bg-purple-50"
+                                            className="flex-shrink-0 p-0.5 rounded hover:bg-blue-50"
                                             title={tester.username ? `统一分配模块 (${tester.username})` : '统一分配模块'}
                                             onClick={(e) => {
                                               e.stopPropagation();
                                               openKanbanAssignmentDialog('module', moduleStat.moduleId, moduleStat.moduleName, tester.username);
                                             }}
                                           >
-                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                                           </button>
                                         )}
                                       </div>
                                       <div className="text-[11px] mt-1" style={{ color: '#64748B' }}>完成 {moduleStat.completed}/{moduleStat.total}</div>
                                     </div>
                                     <div className="flex flex-shrink-0 items-center gap-2">
-                                      <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#F1F5F9', color: '#334155', minWidth: '48px', textAlign: 'center' }}>{moduleStat.completionRate}%</span>
+                                      <span className="text-xs px-2 py-0.5 rounded" style={{ backgroundColor: '#EFF6FF', color: '#1D4ED8', minWidth: '48px', textAlign: 'center' }}>{moduleStat.completionRate}%</span>
                                       <button type="button" onClick={(e) => { e.stopPropagation(); onNavigateTreeNode('module', moduleStat.moduleId); }} className="text-xs px-2 py-0.5 rounded border hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#475569' }}>
                                         定位
                                       </button>
                                     </div>
                                   </div>
                                   <div className="h-2 rounded-sm overflow-hidden mt-2" style={{ backgroundColor: '#E2E8F0' }} title={getModuleTooltipText(tester, moduleStat)}>
-                                    <div className="h-full rounded-sm" style={{ width: `${moduleStat.completionRate}%`, backgroundColor: getCompletionColor(moduleStat.completionRate) }} />
+                                    <div className="h-full rounded-sm" style={{ width: `${moduleStat.completionRate}%`, background: 'linear-gradient(90deg, #93C5FD 0%, #2563EB 100%)' }} />
                                   </div>
                                   {isModuleExpanded && (
                                     <div className="mt-3 border-t pt-2 space-y-1.5" style={{ borderColor: '#E2E8F0' }}>
@@ -6943,14 +7008,14 @@ function ProjectExecutionSummary({
                                               {isManager && (
                                                 <button
                                                   type="button"
-                                                  className="flex-shrink-0 p-0.5 rounded hover:bg-purple-50"
+                                                  className="flex-shrink-0 p-0.5 rounded hover:bg-blue-50"
                                                   title={caseItem.testerName ? `重新分配 (${caseItem.testerName})` : '分配测试者'}
                                                   onClick={(e) => {
                                                     e.stopPropagation();
                                                     openKanbanAssignmentDialog('case', caseItem.id, caseTitle, caseItem.testerName);
                                                   }}
                                                 >
-                                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8B5CF6" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                                                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M22 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
                                                 </button>
                                               )}
                                               <button type="button" onClick={() => onNavigateCase(caseItem.id)} className="text-xs px-2 py-0.5 rounded border flex-shrink-0 hover:bg-slate-50" style={{ borderColor: '#CBD5E1', color: '#2563EB' }}>
@@ -7015,7 +7080,7 @@ function ProjectExecutionSummary({
                   progressSummaryByCategory.function,
                   '当前没有功能测试进度数据',
                 )}
-                {renderProjectSummarySection(
+                {progressSummaryByCategory.stress.total > 0 && renderProjectSummarySection(
                   '压测测试进度汇总',
                   'stress',
                   progressSummaryByCategory.stress,
