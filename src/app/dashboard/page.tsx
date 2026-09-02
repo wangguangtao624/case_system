@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback, useRef, Fragment, useMemo, startTransition } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
+import { isHttpJiraLink, parseJiraLinks, serializeJiraLinks } from '@/lib/jira-links';
 
 // Global type declarations
 declare global {
@@ -354,10 +355,10 @@ export default function DashboardPage() {
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [sidebarWidth, setSidebarWidth] = useState(260);
+  const [sidebarWidth, setSidebarWidth] = useState(340);
   const [isResizing, setIsResizing] = useState(false);
   const sidebarResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const MIN_SIDEBAR_WIDTH = 260;
+  const MIN_SIDEBAR_WIDTH = 300;
   const [loading, setLoading] = useState(true);
   const [allUsers, setAllUsers] = useState<UserItem[]>([]);
   const [testerFilter, setTesterFilter] = useState<string>(''); // '' = all, 'my' = my tasks, user_id = specific
@@ -2397,7 +2398,7 @@ function CaseDetail({
     step: nullToEmpty(caseData.step),
     expect_result: nullToEmpty(caseData.expect_result),
     note: nullToEmpty(caseData.note),
-    jira_link: nullToEmpty(caseData.jira_link),
+    jira_link: serializeJiraLinks(caseData.jira_link),
     fail_note: nullToEmpty(caseData.fail_note),
     test_log: nullToEmpty(caseData.test_log),
     executor: nullToEmpty(caseData.executor),
@@ -2436,7 +2437,7 @@ function CaseDetail({
       step: caseData.step ?? '',
       expect_result: caseData.expect_result ?? '',
       note: caseData.note ?? '',
-      jira_link: caseData.jira_link ?? '',
+      jira_link: serializeJiraLinks(caseData.jira_link),
       fail_note: caseData.fail_note ?? '',
       test_log: caseData.test_log ?? '',
       executor: caseData.executor ?? '',
@@ -2444,6 +2445,8 @@ function CaseDetail({
       priority: caseData.priority ?? '',
     });
     setEditingMode(false); // Reset edit mode when case changes
+    setEditingJira(false);
+    setJiraLinkError(false);
   }, [caseData]);
 
   // Close tester assign dropdown on outside click
@@ -2550,10 +2553,28 @@ function CaseDetail({
     if (field === 'jira_link') setJiraLinkError(false);
   };
 
+  const updateJiraLink = (index: number, value: string) => {
+    const links = form.jira_link.split('\n');
+    links[index] = value;
+    handleFieldChange('jira_link', links.join('\n'));
+  };
+
+  const addJiraLink = () => {
+    setEditingJira(true);
+    handleFieldChange('jira_link', `${form.jira_link}\n`);
+  };
+
+  const removeJiraLink = (index: number) => {
+    const links = form.jira_link.split('\n');
+    links.splice(index, 1);
+    handleFieldChange('jira_link', links.join('\n'));
+  };
+
   const handleSave = async (saveType: 'core' | 'result' = 'result') => {
     // Validate jira_link format if provided
-    if (form.jira_link && form.jira_link.trim() && !/^https?:\/\/.+/.test(form.jira_link.trim())) {
-      setMessage({ type: 'error', text: 'Jira链接格式不正确，需以http://或https://开头' });
+    const jiraLinks = parseJiraLinks(form.jira_link);
+    if (jiraLinks.some(link => !isHttpJiraLink(link))) {
+      setMessage({ type: 'error', text: 'Jira链接格式不正确，每条链接均需以http://或https://开头' });
       setJiraLinkError(true);
       setTimeout(() => setMessage(null), 1000);
       return;
@@ -2588,7 +2609,7 @@ function CaseDetail({
         Object.assign(body, {
           test_device: form.test_device,
           test_result: form.test_result,
-          jira_link: form.jira_link,
+          jira_link: serializeJiraLinks(form.jira_link),
           fail_note: form.fail_note,
           test_log: form.test_log,
           test_result_note: form.test_result_note,
@@ -2604,7 +2625,10 @@ function CaseDetail({
       if (data.success) {
         setMessage({ type: 'success', text: saveType === 'core' ? '基础信息保存成功' : '测试结果保存成功' });
         setEditingMode(false);
-        onUpdate(form);
+        setEditingJira(false);
+        const updatedForm = { ...form, jira_link: serializeJiraLinks(form.jira_link) };
+        setForm(updatedForm);
+        onUpdate(updatedForm);
       } else {
         setMessage({ type: 'error', text: data.error || '保存失败' });
       }
@@ -2766,6 +2790,8 @@ function CaseDetail({
   const canEditCore = permissions.canEditCore && (isManager ? editingMode : permissions.canEditCore);
   // Whether the current user can edit result fields
   const canEditResult = permissions.canEditResult;
+  const jiraLinkRows = form.jira_link.split('\n');
+  const displayJiraLinks = parseJiraLinks(form.jira_link);
 
   // Unified read-only style: no gray background, no disabled cursor - just clean text display
   const readOnlyInputStyle = (editable: boolean) => ({
@@ -3155,40 +3181,59 @@ function CaseDetail({
               <td className="px-3 py-2 text-xs font-medium whitespace-nowrap" style={{ color: '#6B7280', backgroundColor: '#F5F5F5', borderRight: '1px solid #E8E8E8' }}>
                 JIRA链接
               </td>
-              <td className="px-2 py-1.5" style={{ backgroundColor: canEditResult ? (form.test_result === 'Fail' && !form.jira_link.trim() ? '#FFFBFB' : 'transparent') : 'transparent' }}>
-                <div className="flex items-center gap-1 w-full" style={{ minHeight: '28px' }}>
-                  {canEditResult && form.jira_link && /^https?:\/\/.+/.test(form.jira_link.trim()) && !editingJira ? (
-                    <>
-                      <a href={form.jira_link} target="_blank" rel="noopener noreferrer"
-                        className="hover:underline truncate text-sm" style={{ color: '#0073E6', maxWidth: 'calc(100% - 24px)' }}
-                        onClick={(e) => e.stopPropagation()}
-                      >
-                        {form.jira_link}
-                      </a>
-                      <button type="button" className="p-0.5 rounded hover:bg-gray-100 flex-shrink-0"
-                        onClick={() => setEditingJira(true)} title="修改链接"
-                      >
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
-                      </button>
-                    </>
-                  ) : (
-                    <input type="text" value={form.jira_link || ''}
-                      onChange={(e) => handleFieldChange('jira_link', e.target.value)}
-                      readOnly={!canEditResult}
-                      className="flex-1 px-2 py-1 border rounded text-sm focus:outline-none focus:ring-1"
-                      style={{ borderColor: jiraLinkError ? '#EF4444' : 'transparent', color: '#1F2937', backgroundColor: jiraLinkError ? '#FFF5F5' : 'transparent', minHeight: '28px', boxSizing: 'border-box', minWidth: '0', cursor: canEditResult ? 'text' : 'default', boxShadow: jiraLinkError ? '0 0 0 2px rgba(239,68,68,0.1)' : 'none' }}
-                      onFocus={(e) => { if (canEditResult) { if (!jiraLinkError) { e.target.style.borderColor = '#0073E6'; e.target.style.boxShadow = '0 0 0 2px rgba(0,115,230,0.1)'; } } }}
-                      onBlur={(e) => {
-                        if (!jiraLinkError) { e.target.style.borderColor = 'transparent'; e.target.style.boxShadow = 'none'; }
-                        if (canEditResult && form.jira_link && /^https?:\/\/.+/.test(form.jira_link.trim())) setEditingJira(false);
-                      }}
-                      placeholder={form.test_result === 'Fail' ? '建议填写JIRA链接' : 'https://...'}
-                    />
-                  )}
-                  {canEditResult && form.test_result === 'Fail' && !form.jira_link.trim() && (
-                    <span className="flex-shrink-0 text-xs" style={{ color: '#EF4444' }}>建议</span>
-                  )}
-                </div>
+              <td className="px-2 py-1.5" style={{ backgroundColor: canEditResult ? (form.test_result === 'Fail' && displayJiraLinks.length === 0 ? '#FFFBFB' : 'transparent') : 'transparent' }}>
+                {canEditResult && (editingJira || displayJiraLinks.length === 0) ? (
+                  <div className="flex flex-col gap-1 w-full">
+                    {jiraLinkRows.map((link, index) => (
+                      <div key={`jira-input-${index}`} className="flex items-center gap-1 w-full">
+                        <input
+                          type="text"
+                          value={link}
+                          onChange={(e) => updateJiraLink(index, e.target.value)}
+                          className="flex-1 px-2 py-1 border rounded text-sm focus:outline-none focus:ring-1"
+                          style={{ borderColor: jiraLinkError ? '#EF4444' : 'transparent', color: '#1F2937', backgroundColor: jiraLinkError ? '#FFF5F5' : 'transparent', minHeight: '28px', boxSizing: 'border-box', minWidth: '0', boxShadow: jiraLinkError ? '0 0 0 2px rgba(239,68,68,0.1)' : 'none' }}
+                          onFocus={(e) => { if (!jiraLinkError) { e.target.style.borderColor = '#0073E6'; e.target.style.boxShadow = '0 0 0 2px rgba(0,115,230,0.1)'; } }}
+                          onBlur={(e) => { if (!jiraLinkError) { e.target.style.borderColor = 'transparent'; e.target.style.boxShadow = 'none'; } }}
+                          placeholder={form.test_result === 'Fail' ? '建议填写JIRA链接' : 'https://...'}
+                          aria-label={`JIRA链接 ${index + 1}`}
+                        />
+                        {jiraLinkRows.length > 1 && (
+                          <button type="button" className="p-1 rounded hover:bg-red-50 flex-shrink-0" onClick={() => removeJiraLink(index)} title="删除此链接" aria-label={`删除JIRA链接 ${index + 1}`}>
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#DC2626" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    <button type="button" className="self-start inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-xs hover:bg-blue-50" style={{ color: '#0073E6' }} onClick={addJiraLink} title="添加JIRA链接">
+                      <span aria-hidden="true">＋</span> 添加链接
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-start gap-1 w-full" style={{ minHeight: '28px' }}>
+                    <div className="flex-1 min-w-0 flex flex-col gap-1 py-1">
+                      {displayJiraLinks.map((link, index) => isHttpJiraLink(link) ? (
+                        <a key={`${link}-${index}`} href={link} target="_blank" rel="noopener noreferrer" className="hover:underline truncate text-sm" style={{ color: '#0073E6' }} onClick={(e) => e.stopPropagation()} title={link}>
+                          {link}
+                        </a>
+                      ) : (
+                        <span key={`${link}-${index}`} className="truncate text-sm" style={{ color: '#6B7280' }} title={link}>{link}</span>
+                      ))}
+                    </div>
+                    {canEditResult && (
+                      <div className="flex items-center gap-0.5 flex-shrink-0 pt-1">
+                        <button type="button" className="p-0.5 rounded hover:bg-blue-50" onClick={addJiraLink} title="添加JIRA链接" aria-label="添加JIRA链接">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#0073E6" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+                        </button>
+                        <button type="button" className="p-0.5 rounded hover:bg-gray-100" onClick={() => setEditingJira(true)} title="修改链接" aria-label="修改JIRA链接">
+                          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#999" strokeWidth="2"><path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" /></svg>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {canEditResult && form.test_result === 'Fail' && displayJiraLinks.length === 0 && (
+                  <span className="block text-xs mt-0.5" style={{ color: '#EF4444' }}>建议填写至少一个JIRA链接</span>
+                )}
               </td>
             </tr>
             {/* Row 3: 测试备注 (full width textarea) */}
@@ -6029,8 +6074,7 @@ function ProjectExecutionSummary({
   useEffect(() => {
     const links = Array.from(new Set(
       selectedProject.cases
-        .map(caseItem => caseItem.jiraLink?.trim())
-        .filter((link): link is string => Boolean(link))
+        .flatMap(caseItem => parseJiraLinks(caseItem.jiraLink))
     ));
 
     if (links.length === 0) {
@@ -6384,10 +6428,10 @@ function ProjectExecutionSummary({
   const getProjectJiraGroups = () => {
     const jiraMap = new Map<string, { link: string; cases: KanbanCaseStat[] }>();
     for (const caseItem of selectedProject.cases) {
-      const jiraLink = caseItem.jiraLink?.trim();
-      if (!jiraLink) continue;
-      if (!jiraMap.has(jiraLink)) jiraMap.set(jiraLink, { link: jiraLink, cases: [] });
-      jiraMap.get(jiraLink)!.cases.push(caseItem);
+      for (const jiraLink of parseJiraLinks(caseItem.jiraLink)) {
+        if (!jiraMap.has(jiraLink)) jiraMap.set(jiraLink, { link: jiraLink, cases: [] });
+        jiraMap.get(jiraLink)!.cases.push(caseItem);
+      }
     }
     return Array.from(jiraMap.values());
   };

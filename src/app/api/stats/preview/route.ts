@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getCurrentUser, isManagerUser } from '@/lib/auth';
+import { parseJiraLinks } from '@/lib/jira-links';
 
 type AssignmentRow = {
   level: string;
@@ -248,7 +249,7 @@ function getJiraLinks(db: ReturnType<typeof getDb>, projectId: number, selectedP
   const jiraMap = new Map<string, { link: string; cases: Array<{ id: number; case_name: string; test_result: string | null; module_name: string }> }>();
   for (const c of cases) {
     // Normalize: trim and handle multiple links (split by comma/newline)
-    const links = c.jira_link.split(/[,，\n]/).map(l => l.trim()).filter(l => l.length > 0);
+    const links = parseJiraLinks(c.jira_link);
     for (const link of links) {
       if (!jiraMap.has(link)) {
         jiraMap.set(link, { link, cases: [] });

@@ -71,7 +71,7 @@ export async function GET(request: NextRequest) {
       projectQuery += ' WHERE p.id = ?';
       projectParams.push(projectId);
       if (!manager) {
-        projectQuery += " AND p.publish_status = 'published'";
+        projectQuery += " AND p.publish_status IN ('published', 'archived')";
       }
     } else {
       if (includeArchived && manager) {

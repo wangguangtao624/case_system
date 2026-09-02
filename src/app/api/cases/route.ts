@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getDb } from '@/lib/db';
 import { getCurrentUser, isManagerUser } from '@/lib/auth';
+import { isHttpJiraLink, parseJiraLinks, serializeJiraLinks } from '@/lib/jira-links';
 
 function isManager(username: string): boolean {
   return isManagerUser(username);
@@ -122,6 +123,14 @@ export async function PUT(request: NextRequest) {
 
     const manager = isManager(user.username);
 
+    const normalizeSubmittedJiraLinks = (value: unknown) => {
+      const links = parseJiraLinks(value);
+      if (links.some(link => !isHttpJiraLink(link))) {
+        return null;
+      }
+      return serializeJiraLinks(links);
+    };
+
     const archivedRow = db.prepare(`
       SELECT p.is_archived, p.publish_status FROM projects p
       JOIN modules m ON m.project_id = p.id
@@ -166,13 +175,17 @@ export async function PUT(request: NextRequest) {
         }
       } else {
         // save result fields
+        const normalizedJiraLinks = normalizeSubmittedJiraLinks(jira_link);
+        if (normalizedJiraLinks === null) {
+          return NextResponse.json({ error: 'Jira链接格式不正确，需以http://或https://开头' }, { status: 400 });
+        }
         db.prepare(`
           UPDATE cases SET 
             test_device = ?, test_result = ?, jira_link = ?, fail_note = ?, test_log = ?,
             test_result_note = ?,
             executor = ?, updated_at = datetime('now', 'localtime')
           WHERE id = ?
-        `).run(test_device || '', test_result, jira_link, fail_note || '', test_log || '', test_result_note || '', user.username, id);
+        `).run(test_device || '', test_result, normalizedJiraLinks, fail_note || '', test_log || '', test_result_note || '', user.username, id);
       }
     } else {
       // Tester: can only edit specific fields on assigned cases
@@ -186,6 +199,10 @@ export async function PUT(request: NextRequest) {
 
       // Only allow tester-editable fields
       const { test_device, test_result, jira_link, fail_note, test_log, test_result_note } = data;
+      const normalizedJiraLinks = normalizeSubmittedJiraLinks(jira_link);
+      if (normalizedJiraLinks === null) {
+        return NextResponse.json({ error: 'Jira链接格式不正确，需以http://或https://开头' }, { status: 400 });
+      }
 
       db.prepare(`
         UPDATE cases SET 
@@ -193,7 +210,7 @@ export async function PUT(request: NextRequest) {
           test_result_note = ?,
           executor = ?, updated_at = datetime('now', 'localtime')
         WHERE id = ?
-      `).run(test_device || '', test_result, jira_link, fail_note || '', test_log || '', test_result_note || '', user.username, id);
+      `).run(test_device || '', test_result, normalizedJiraLinks, fail_note || '', test_log || '', test_result_note || '', user.username, id);
     }
 
     return NextResponse.json({ success: true });
