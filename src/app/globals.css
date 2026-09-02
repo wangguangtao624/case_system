@@ -1,6 +1,16 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
+.report-log img {
+  max-width: 100% !important;
+  height: auto !important;
+}
+
+.report-log table {
+  max-width: 100%;
+  border-collapse: collapse;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

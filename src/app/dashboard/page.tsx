@@ -156,6 +156,14 @@ interface CaseTester {
   assignmentLevel: string;
 }
 
+interface ReportDialogState {
+  projectId: number;
+  projectName: string;
+  initialScope?: 'project' | 'case';
+  caseId?: number;
+  caseName?: string;
+}
+
 interface KanbanTesterStat {
   userId: number;
   username: string;
@@ -366,6 +374,7 @@ export default function DashboardPage() {
   const [archiveDialog, setArchiveDialog] = useState<{ projectId: number; projectName: string } | null>(null);
   const [archiveNote, setArchiveNote] = useState('');
   const [archiving, setArchiving] = useState(false);
+  const [reportDialog, setReportDialog] = useState<ReportDialogState | null>(null);
   const [showKanban, setShowKanban] = useState(false);
   const [kanbanData, setKanbanData] = useState<KanbanGanttData | null>(null);
   const [kanbanLoading, setKanbanLoading] = useState(false);
@@ -822,6 +831,29 @@ export default function DashboardPage() {
     }
   };
 
+  const handleRestoreArchived = async (projectId: number) => {
+    if (!confirm('确定将此项目恢复到“进行中的项目”吗？项目、Case、执行记录和文件都会完整保留。')) return;
+    try {
+      const res = await fetch('/api/archives', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        alert(data.error || '撤销归档失败');
+        return;
+      }
+      setSelectedCase(null);
+      setSelectedProjectOverview(null);
+      setSelectedNodeId(null);
+      setProjectFilter('active');
+      loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', 'active');
+    } catch {
+      alert('撤销归档失败');
+    }
+  };
+
   const handleBugSubmit = async () => {
     if (!bugTitle.trim()) { setBugMsg({ type: 'error', text: '请输入标题' }); return; }
     setBugSubmitting(true);
@@ -1003,6 +1035,8 @@ export default function DashboardPage() {
                 fetchJiraBoardData();
               }}
               onDeleteArchived={handleDeleteArchived}
+              onRestoreArchived={handleRestoreArchived}
+              onGenerateReport={(projectId, projectName) => setReportDialog({ projectId, projectName, initialScope: 'project' })}
             />
           )}
         </aside>
@@ -1135,6 +1169,7 @@ export default function DashboardPage() {
                     }
                   }).catch(() => {});
               }}
+              onGenerateReport={(caseId, projectId, projectName, caseName) => setReportDialog({ projectId, projectName, initialScope: 'case', caseId, caseName })}
               onUpdate={(updatedCase) => {
                 setSelectedCase(updatedCase);
                 loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter); // Refresh tree to update test result icons
@@ -1193,6 +1228,9 @@ export default function DashboardPage() {
       )}
       {showSettings && isManager && (
         <StorageSettingsDialog onClose={() => setShowSettings(false)} />
+      )}
+      {reportDialog && (
+        <ReportShareDialog value={reportDialog} onClose={() => setReportDialog(null)} />
       )}
       {showPreview && (
         <FilePreviewDialog
@@ -1416,6 +1454,8 @@ function SidebarTree({
   onOpenKanban,
   onOpenJiraBoard,
   onDeleteArchived,
+  onRestoreArchived,
+  onGenerateReport,
 }: {
   user: UserInfo;
   tree: TreeNode[];
@@ -1439,6 +1479,8 @@ function SidebarTree({
   onOpenKanban: () => void;
   onOpenJiraBoard: () => void;
   onDeleteArchived: (projectId: number) => Promise<void> | void;
+  onRestoreArchived: (projectId: number) => Promise<void> | void;
+  onGenerateReport: (projectId: number, projectName: string) => void;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(null);
   const [editingNode, setEditingNode] = useState<{ node: TreeNode; newName: string } | null>(null);
@@ -2074,6 +2116,24 @@ function SidebarTree({
                     删除归档
                   </button>
                 )}
+                {contextMenu.node.isArchived && (
+                  <>
+                    <button
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-emerald-50"
+                      style={{ color: '#059669' }}
+                      onClick={() => { onRestoreArchived(contextMenu.node.dbId); setContextMenu(null); }}
+                    >
+                      恢复为进行中
+                    </button>
+                    <button
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50"
+                      style={{ color: '#0073E6' }}
+                      onClick={() => { onGenerateReport(contextMenu.node.dbId, contextMenu.node.name); setContextMenu(null); }}
+                    >
+                      生成测试报告
+                    </button>
+                  </>
+                )}
                 {!contextMenu.node.isArchived && (
                   <button
                     className="w-full text-left px-3 py-1.5 text-sm hover:bg-gray-100"
@@ -2350,6 +2410,101 @@ function SidebarTree({
   );
 }
 
+function ReportShareDialog({ value, onClose }: { value: ReportDialogState; onClose: () => void }) {
+  const [scope, setScope] = useState<'project' | 'feature' | 'case'>(value.initialScope || 'project');
+  const [features, setFeatures] = useState<string[]>([]);
+  const [cases, setCases] = useState<Array<{ id: number; case_no: string; case_name: string; feature: string; module_name: string }>>([]);
+  const [feature, setFeature] = useState('');
+  const [caseId, setCaseId] = useState(value.caseId ? String(value.caseId) : '');
+  const [isArchived, setIsArchived] = useState(value.initialScope === 'project');
+  const [loading, setLoading] = useState(value.initialScope !== 'case');
+  const [generating, setGenerating] = useState(false);
+  const [result, setResult] = useState<{ reportUrl: string; downloadUrl: string } | null>(null);
+  const [message, setMessage] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/reports?projectId=${value.projectId}`)
+      .then(async response => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || '加载失败');
+        if (cancelled) return;
+        setFeatures(data.features || []);
+        setCases(data.cases || []);
+        setIsArchived(Boolean(data.project?.isArchived));
+        setFeature((data.features || [])[0] || '');
+        if (!value.caseId) setCaseId(String((data.cases || [])[0]?.id || ''));
+      })
+      .catch(error => {
+        if (!cancelled && value.initialScope !== 'case') setMessage(error instanceof Error ? error.message : '加载失败');
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [value.caseId, value.initialScope, value.projectId]);
+
+  const generate = async () => {
+    setGenerating(true);
+    setMessage('');
+    try {
+      const response = await fetch('/api/reports', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectId: value.projectId, scope, feature: scope === 'feature' ? feature : undefined, caseId: scope === 'case' ? Number(caseId) : undefined }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || '生成失败');
+      setResult({ reportUrl: data.reportUrl, downloadUrl: data.downloadUrl });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : '生成报告失败');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const copyLink = async () => {
+    if (!result) return;
+    try {
+      if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable');
+      await navigator.clipboard.writeText(result.reportUrl);
+      setMessage('链接已复制，可直接粘贴到 JIRA。');
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = result.reportUrl;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      setMessage(copied ? '链接已复制，可直接粘贴到 JIRA。' : '自动复制失败，请手动复制链接。');
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[80] flex items-center justify-center p-4" style={{ backgroundColor: 'rgba(15,23,42,0.48)' }} onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-xl shadow-2xl w-[620px] max-w-full max-h-[90vh] overflow-auto">
+        <div className="px-6 py-4 border-b" style={{ borderColor: '#E5E7EB' }}><h3 className="font-bold">生成只读测试报告</h3><p className="text-xs mt-1" style={{ color: '#64748B' }}>链接无需登录即可访问，仅提供查看和离线下载，不包含编辑入口。</p></div>
+        <div className="px-6 py-5 space-y-4">
+          <div><label className="text-xs font-semibold" style={{ color: '#64748B' }}>项目</label><div className="mt-1 px-3 py-2 rounded border text-sm" style={{ borderColor: '#E5E7EB', backgroundColor: '#F8FAFC' }}>{value.projectName}</div></div>
+          {value.initialScope === 'case' ? (
+            <div><label className="text-xs font-semibold" style={{ color: '#64748B' }}>报告范围</label><div className="mt-1 px-3 py-2 rounded border text-sm" style={{ borderColor: '#E5E7EB' }}>单个 Case：{value.caseName}</div></div>
+          ) : (
+            <>
+              <div><label className="text-xs font-semibold" style={{ color: '#64748B' }}>报告范围</label><select value={scope} onChange={event => { setScope(event.target.value as typeof scope); setResult(null); }} className="mt-1 w-full px-3 py-2 rounded border text-sm" style={{ borderColor: '#D1D5DB' }} disabled={loading}><option value="project">整个项目</option><option value="feature">指定特性</option><option value="case">单个 Case</option></select></div>
+              {scope === 'feature' && <div><label className="text-xs font-semibold" style={{ color: '#64748B' }}>选择特性</label><select value={feature} onChange={event => setFeature(event.target.value)} className="mt-1 w-full px-3 py-2 rounded border text-sm" style={{ borderColor: '#D1D5DB' }}>{features.map(item => <option key={item} value={item}>{item}</option>)}</select></div>}
+              {scope === 'case' && <div><label className="text-xs font-semibold" style={{ color: '#64748B' }}>选择 Case</label><select value={caseId} onChange={event => setCaseId(event.target.value)} className="mt-1 w-full px-3 py-2 rounded border text-sm" style={{ borderColor: '#D1D5DB' }}>{cases.map(item => <option key={item.id} value={item.id}>{item.module_name} / {[item.case_no, item.case_name].filter(Boolean).join(' ')}</option>)}</select></div>}
+              {!isArchived && scope !== 'case' && <div className="text-xs p-2 rounded" style={{ color: '#92400E', backgroundColor: '#FFFBEB' }}>项目或特性报告需在项目归档后生成。</div>}
+            </>
+          )}
+          {result && <div className="rounded-lg border p-3" style={{ borderColor: '#BFDBFE', backgroundColor: '#EFF6FF' }}><div className="text-xs font-semibold mb-1" style={{ color: '#1D4ED8' }}>只读链接</div><input readOnly value={result.reportUrl} onFocus={event => event.currentTarget.select()} className="w-full px-2 py-1.5 border rounded text-xs bg-white" style={{ borderColor: '#BFDBFE' }} /><div className="flex flex-wrap gap-2 mt-3"><button onClick={copyLink} className="px-3 py-1.5 rounded text-xs text-white" style={{ backgroundColor: '#2563EB' }}>复制链接</button><a href={result.reportUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded text-xs border bg-white" style={{ borderColor: '#93C5FD', color: '#1D4ED8' }}>打开报告</a><a href={result.downloadUrl} className="px-3 py-1.5 rounded text-xs border bg-white" style={{ borderColor: '#93C5FD', color: '#1D4ED8' }}>下载离线 HTML</a></div></div>}
+          {message && <div className="text-xs" style={{ color: message.includes('失败') || message.includes('权限') || message.includes('需在') ? '#DC2626' : '#059669' }}>{message}</div>}
+        </div>
+        <div className="px-6 py-3 border-t flex justify-end gap-2" style={{ borderColor: '#E5E7EB' }}><button onClick={onClose} className="px-4 py-2 rounded border text-sm" style={{ borderColor: '#D1D5DB' }}>关闭</button><button onClick={generate} disabled={generating || loading || (scope === 'feature' && !feature) || (scope === 'case' && !caseId) || (!isArchived && scope !== 'case')} className="px-4 py-2 rounded text-white text-sm disabled:opacity-50" style={{ backgroundColor: '#0073E6' }}>{generating ? '生成中...' : result ? '重新生成' : '生成报告'}</button></div>
+      </div>
+    </div>
+  );
+}
+
 // ============ Case Detail ============
 function CaseDetail({
   caseData,
@@ -2363,6 +2518,7 @@ function CaseDetail({
   allUsers,
   onAssignTester,
   onRemoveTesterAssignment,
+  onGenerateReport,
 }: {
   caseData: CaseData;
   files: FileData[];
@@ -2381,6 +2537,7 @@ function CaseDetail({
   allUsers: UserItem[];
   onAssignTester: (caseId: number, userId: number) => void;
   onRemoveTesterAssignment: (caseId: number) => void;
+  onGenerateReport: (caseId: number, projectId: number, projectName: string, caseName: string) => void;
 }) {
   const nullToEmpty = (v: string | null | undefined) => v ?? '';
   const [form, setForm] = useState({
@@ -2897,6 +3054,17 @@ function CaseDetail({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {permissions.canEditResult && (
+              <button
+                type="button"
+                onClick={() => onGenerateReport(form.id, form.project_id, form.project_name, [form.case_no, form.case_name].filter(Boolean).join(' '))}
+                className="text-xs px-3 py-1.5 rounded font-medium transition-all hover:bg-blue-50"
+                style={{ color: '#0073E6', border: '1px solid #B3D9FF', backgroundColor: '#FFFFFF' }}
+                title="生成无需登录的只读Case链接"
+              >
+                分享只读报告
+              </button>
+            )}
             {isManager && (
               <button
                 onClick={() => {

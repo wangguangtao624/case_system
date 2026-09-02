@@ -98,6 +98,40 @@ export async function PUT(request: NextRequest) {
   }
 }
 
+export async function PATCH(request: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
+    if (!isManagerUser(user.username)) {
+      return NextResponse.json({ error: '仅管理者可撤销归档' }, { status: 403 });
+    }
+
+    const { projectId } = await request.json();
+    if (!projectId) return NextResponse.json({ error: '缺少项目ID' }, { status: 400 });
+
+    const db = getDb();
+    const project = db.prepare('SELECT id, is_archived, publish_status FROM projects WHERE id = ?').get(projectId) as { id: number; is_archived: number; publish_status: string } | undefined;
+    if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
+    if (!project.is_archived && project.publish_status !== 'archived') {
+      return NextResponse.json({ error: '项目当前未归档' }, { status: 400 });
+    }
+
+    db.transaction(() => {
+      db.prepare(`
+        UPDATE projects
+        SET is_archived = 0,
+            publish_status = 'published'
+        WHERE id = ?
+      `).run(projectId);
+    })();
+
+    return NextResponse.json({ success: true, publishStatus: 'published' });
+  } catch (error) {
+    console.error('Restore archived project error:', error);
+    return NextResponse.json({ error: '撤销归档失败' }, { status: 500 });
+  }
+}
+
 export async function GET(request: NextRequest) {
   try {
     const user = await getCurrentUser();
