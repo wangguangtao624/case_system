@@ -4,6 +4,27 @@ import { useState, useEffect, useCallback, useRef, Fragment, useMemo, startTrans
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { isHttpJiraLink, parseJiraLinks, serializeJiraLinks } from '@/lib/jira-links';
+import { ReportDownloadButton } from '@/components/report-download-button';
+
+async function copyText(text: string) {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(textarea);
+  textarea.select();
+  const copied = document.execCommand('copy');
+  document.body.removeChild(textarea);
+  if (!copied) throw new Error('浏览器未允许访问剪贴板');
+}
+
+async function copyDynamicReportLink(input: { scope: 'project' | 'feature' | 'case'; projectId?: number; moduleId?: number; caseId?: number }) {
+  const response = await fetch('/api/reports', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.reportUrl) throw new Error(data.error || '获取报告链接失败');
+  await copyText(data.reportUrl);
+  return data.reportUrl as string;
+}
 
 // Global type declarations
 declare global {
@@ -1036,7 +1057,6 @@ export default function DashboardPage() {
               }}
               onDeleteArchived={handleDeleteArchived}
               onRestoreArchived={handleRestoreArchived}
-              onGenerateReport={(projectId, projectName) => setReportDialog({ projectId, projectName, initialScope: 'project' })}
             />
           )}
         </aside>
@@ -1169,7 +1189,7 @@ export default function DashboardPage() {
                     }
                   }).catch(() => {});
               }}
-              onGenerateReport={(caseId, projectId, projectName, caseName) => setReportDialog({ projectId, projectName, initialScope: 'case', caseId, caseName })}
+              onGenerateReport={(caseId) => copyDynamicReportLink({ scope: 'case', caseId }).then(() => alert('动态报告链接已复制')).catch(error => alert(error.message))}
               onUpdate={(updatedCase) => {
                 setSelectedCase(updatedCase);
                 loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter); // Refresh tree to update test result icons
@@ -1455,7 +1475,6 @@ function SidebarTree({
   onOpenJiraBoard,
   onDeleteArchived,
   onRestoreArchived,
-  onGenerateReport,
 }: {
   user: UserInfo;
   tree: TreeNode[];
@@ -1480,7 +1499,6 @@ function SidebarTree({
   onOpenJiraBoard: () => void;
   onDeleteArchived: (projectId: number) => Promise<void> | void;
   onRestoreArchived: (projectId: number) => Promise<void> | void;
-  onGenerateReport: (projectId: number, projectName: string) => void;
 }) {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; node: TreeNode } | null>(null);
   const [editingNode, setEditingNode] = useState<{ node: TreeNode; newName: string } | null>(null);
@@ -2087,6 +2105,26 @@ function SidebarTree({
             className="fixed z-50 bg-white rounded-md shadow-lg border py-1"
             style={{ left: contextMenu.x, top: contextMenu.y, borderColor: '#EEEEEE', minWidth: '160px' }}
           >
+            {contextMenu.node.type !== 'project-space' && contextMenu.node.publishStatus !== 'draft' && (
+              <button
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50"
+                style={{ color: '#0073E6' }}
+                onClick={() => {
+                  const node = contextMenu.node;
+                  const input = node.type === 'project'
+                    ? { scope: 'project' as const, projectId: node.dbId }
+                    : node.type === 'module'
+                      ? { scope: 'feature' as const, moduleId: node.dbId }
+                      : { scope: 'case' as const, caseId: node.dbId };
+                  setContextMenu(null);
+                  copyDynamicReportLink(input)
+                    .then(() => { setMessage({ type: 'success', text: '动态报告链接已复制' }); setTimeout(() => setMessage(null), 1600); })
+                    .catch(error => { setMessage({ type: 'error', text: error instanceof Error ? error.message : '复制失败' }); setTimeout(() => setMessage(null), 2200); });
+                }}
+              >
+                复制报告链接
+              </button>
+            )}
             {isManager && contextMenu.node.type === 'project' && (
               <>
                 {contextMenu.node.publishStatus === 'draft' && !contextMenu.node.isArchived && (
@@ -2124,13 +2162,6 @@ function SidebarTree({
                       onClick={() => { onRestoreArchived(contextMenu.node.dbId); setContextMenu(null); }}
                     >
                       恢复为进行中
-                    </button>
-                    <button
-                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50"
-                      style={{ color: '#0073E6' }}
-                      onClick={() => { onGenerateReport(contextMenu.node.dbId, contextMenu.node.name); setContextMenu(null); }}
-                    >
-                      生成测试报告
                     </button>
                   </>
                 )}
@@ -2213,7 +2244,7 @@ function SidebarTree({
                 项目空间为系统节点，无需额外操作
               </div>
             )}
-            {!isManager && (
+            {!isManager && contextMenu.node.type === 'project-space' && (
               <div className="px-3 py-2 text-xs" style={{ color: '#999' }}>
                 仅管理者可操作
               </div>
@@ -2496,7 +2527,7 @@ function ReportShareDialog({ value, onClose }: { value: ReportDialogState; onClo
               {!isArchived && scope !== 'case' && <div className="text-xs p-2 rounded" style={{ color: '#92400E', backgroundColor: '#FFFBEB' }}>项目或特性报告需在项目归档后生成。</div>}
             </>
           )}
-          {result && <div className="rounded-lg border p-3" style={{ borderColor: '#BFDBFE', backgroundColor: '#EFF6FF' }}><div className="text-xs font-semibold mb-1" style={{ color: '#1D4ED8' }}>只读链接</div><input readOnly value={result.reportUrl} onFocus={event => event.currentTarget.select()} className="w-full px-2 py-1.5 border rounded text-xs bg-white" style={{ borderColor: '#BFDBFE' }} /><div className="flex flex-wrap gap-2 mt-3"><button onClick={copyLink} className="px-3 py-1.5 rounded text-xs text-white" style={{ backgroundColor: '#2563EB' }}>复制链接</button><a href={result.reportUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded text-xs border bg-white" style={{ borderColor: '#93C5FD', color: '#1D4ED8' }}>打开报告</a><a href={result.downloadUrl} className="px-3 py-1.5 rounded text-xs border bg-white" style={{ borderColor: '#93C5FD', color: '#1D4ED8' }}>下载离线 HTML</a></div></div>}
+          {result && <div className="rounded-lg border p-3" style={{ borderColor: '#BFDBFE', backgroundColor: '#EFF6FF' }}><div className="text-xs font-semibold mb-1" style={{ color: '#1D4ED8' }}>只读链接</div><input readOnly value={result.reportUrl} onFocus={event => event.currentTarget.select()} className="w-full px-2 py-1.5 border rounded text-xs bg-white" style={{ borderColor: '#BFDBFE' }} /><div className="flex flex-wrap items-start gap-2 mt-3"><button onClick={copyLink} className="px-3 py-1.5 rounded text-xs text-white" style={{ backgroundColor: '#2563EB' }}>复制链接</button><a href={result.reportUrl} target="_blank" rel="noopener noreferrer" className="px-3 py-1.5 rounded text-xs border bg-white" style={{ borderColor: '#93C5FD', color: '#1D4ED8' }}>打开报告</a><ReportDownloadButton href={result.downloadUrl} compact /></div></div>}
           {message && <div className="text-xs" style={{ color: message.includes('失败') || message.includes('权限') || message.includes('需在') ? '#DC2626' : '#059669' }}>{message}</div>}
         </div>
         <div className="px-6 py-3 border-t flex justify-end gap-2" style={{ borderColor: '#E5E7EB' }}><button onClick={onClose} className="px-4 py-2 rounded border text-sm" style={{ borderColor: '#D1D5DB' }}>关闭</button><button onClick={generate} disabled={generating || loading || (scope === 'feature' && !feature) || (scope === 'case' && !caseId) || (!isArchived && scope !== 'case')} className="px-4 py-2 rounded text-white text-sm disabled:opacity-50" style={{ backgroundColor: '#0073E6' }}>{generating ? '生成中...' : result ? '重新生成' : '生成报告'}</button></div>
@@ -3060,9 +3091,9 @@ function CaseDetail({
                 onClick={() => onGenerateReport(form.id, form.project_id, form.project_name, [form.case_no, form.case_name].filter(Boolean).join(' '))}
                 className="text-xs px-3 py-1.5 rounded font-medium transition-all hover:bg-blue-50"
                 style={{ color: '#0073E6', border: '1px solid #B3D9FF', backgroundColor: '#FFFFFF' }}
-                title="生成无需登录的只读Case链接"
+                title="复制会随执行情况实时更新的只读 Case 报告链接"
               >
-                分享只读报告
+                复制报告链接
               </button>
             )}
             {isManager && (

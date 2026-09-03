@@ -37,6 +37,7 @@ export interface ReportTokenPayload {
   scope: 'project' | 'feature' | 'case';
   projectId: number;
   feature?: string;
+  moduleId?: number;
   caseId?: number;
   createdBy: string;
 }
@@ -81,6 +82,7 @@ export async function verifyReportToken(token: string): Promise<ReportTokenPaylo
       scope: payload.scope as ReportTokenPayload['scope'],
       projectId,
       feature: typeof payload.feature === 'string' ? payload.feature : undefined,
+      moduleId: typeof payload.moduleId === 'number' ? payload.moduleId : undefined,
       caseId: typeof payload.caseId === 'number' ? payload.caseId : undefined,
       createdBy: typeof payload.createdBy === 'string' ? payload.createdBy : '未知',
     };

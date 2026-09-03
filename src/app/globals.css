@@ -2,13 +2,22 @@
 @import 'tw-animate-css';
 
 .report-log img {
-  max-width: 100% !important;
+  max-width: 45% !important;
   height: auto !important;
+  display: inline-block !important;
+  vertical-align: bottom !important;
+  margin: 2px 4px;
 }
 
 .report-log table {
   max-width: 100%;
   border-collapse: collapse;
+}
+
+@media (max-width: 640px) {
+  .report-log img {
+    max-width: 100% !important;
+  }
 }
 
 @custom-variant dark (&:is(.dark *));
@@ -184,6 +193,11 @@ body {
 /* Rich text editor image alignment - bottom align for text-image mixed rows */
 [contenteditable] img.editor-img {
   vertical-align: bottom !important;
+}
+
+/* Read-only report images open in the full-screen viewer on double click. */
+.report-log img {
+  cursor: zoom-in;
 }
 
 /* Toast animations */

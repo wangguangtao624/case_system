@@ -31,7 +31,7 @@ resolve_node_bin() {
 
 start_service() {
     cd "${PROJECT_ROOT}"
-    echo "Starting HTTP service on port ${DEPLOY_RUN_PORT} for deploy..."
+    echo "[$(date --iso-8601=seconds)] Starting HTTP service on port ${DEPLOY_RUN_PORT} for deploy..."
     local node_bin
     node_bin="$(resolve_node_bin)"
     exec env PORT="${DEPLOY_RUN_PORT}" \
@@ -40,5 +40,4 @@ start_service() {
     "${node_bin}" dist/server.js
 }
 
-echo "Starting HTTP service on port ${DEPLOY_RUN_PORT} for deploy..."
 start_service

@@ -3,6 +3,7 @@ import { getDb } from '@/lib/db';
 import { getCurrentUser, isManagerUser } from '@/lib/auth';
 import fs from 'fs';
 import { Readable } from 'stream';
+import { readTextFilePreview } from '@/lib/text-file-preview';
 
 const IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'];
 const TEXT_EXTENSIONS = ['.txt', '.log', '.csv', '.json', '.xml', '.yaml', '.yml', '.md', '.ini', '.conf', '.cfg', '.properties'];
@@ -118,12 +119,11 @@ export async function GET(
     }
 
     if (isText) {
-      const content = fs.readFileSync(file.storage_path, 'utf-8');
-      const preview = content.substring(0, 50000);
+      const preview = await readTextFilePreview(file.storage_path);
       return NextResponse.json({
-        content: preview,
+        content: preview.content,
         filename: file.original_name,
-        truncated: content.length > 50000,
+        truncated: preview.truncated,
       });
     }
 

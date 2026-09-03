@@ -98,6 +98,19 @@ function initializeDatabase(db: Database.Database) {
       key TEXT PRIMARY KEY,
       value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS report_links (
+      code TEXT PRIMARY KEY,
+      scope_key TEXT UNIQUE NOT NULL,
+      scope TEXT NOT NULL,
+      project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      module_id INTEGER REFERENCES modules(id) ON DELETE CASCADE,
+      case_id INTEGER REFERENCES cases(id) ON DELETE CASCADE,
+      created_by TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_report_links_project ON report_links(project_id);
   `);
 
   // Migration: add test_log column if not exists

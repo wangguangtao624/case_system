@@ -32,6 +32,10 @@ export async function consumeMultipartRequest(request: Request, handlers: Multip
   const busboy = Busboy({
     headers: Object.fromEntries(request.headers.entries()),
     limits: handlers.limits,
+    // Browsers encode multipart filename parameters as UTF-8 bytes. Busboy's
+    // legacy default is latin1, which turns Chinese names into mojibake such as
+    // "åé¡¹..." before the upload handler ever sees them.
+    defParamCharset: 'utf8',
   });
 
   const pending: Promise<void>[] = [];

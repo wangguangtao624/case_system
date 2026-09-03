@@ -14,10 +14,14 @@ running_pid() {
     if [[ -f "${PID_FILE}" ]]; then
         local pid
         pid="$(cat "${PID_FILE}")"
-        if [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+        if [[ "${pid}" =~ ^[0-9]+$ ]] \
+            && kill -0 "${pid}" 2>/dev/null \
+            && [[ "$(readlink -f "/proc/${pid}/cwd" 2>/dev/null || true)" == "${PROJECT_ROOT}" ]] \
+            && tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null | grep -q 'scripts/supervise.sh'; then
             echo "${pid}"
             return 0
         fi
+        rm -f "${PID_FILE}"
     fi
     return 1
 }
@@ -40,6 +44,17 @@ ensure_port_free() {
     fi
 }
 
+service_healthy() {
+    curl --fail --silent --show-error --max-time 2 \
+        "http://127.0.0.1:${PORT}/login" >/dev/null 2>&1
+}
+
+rotate_log() {
+    if [[ -f "${LOG_FILE}" ]] && (( $(stat -c%s "${LOG_FILE}") > 10485760 )); then
+        mv "${LOG_FILE}" "${LOG_FILE}.1"
+    fi
+}
+
 start_service() {
     if pid="$(running_pid)"; then
         echo "Service is already running with PID ${pid}."
@@ -47,20 +62,29 @@ start_service() {
     fi
 
     ensure_port_free
+    rotate_log
 
     cd "${PROJECT_ROOT}"
-    setsid bash -lc "cd \"${PROJECT_ROOT}\" && exec bash \"${PROJECT_ROOT}/scripts/start.sh\"" >>"${LOG_FILE}" 2>&1 < /dev/null &
+    setsid bash "${PROJECT_ROOT}/scripts/supervise.sh" >>"${LOG_FILE}" 2>&1 < /dev/null &
     local pid=$!
     echo "${pid}" > "${PID_FILE}"
 
-    sleep 3
-    if kill -0 "${pid}" 2>/dev/null; then
-        echo "Service started with PID ${pid}. Log: ${LOG_FILE}"
-        return 0
-    fi
+    for _ in {1..30}; do
+        if ! kill -0 "${pid}" 2>/dev/null; then
+            break
+        fi
+        if service_healthy; then
+            echo "Service started with PID ${pid}. Log: ${LOG_FILE}"
+            return 0
+        fi
+        sleep 1
+    done
 
-    echo "Service failed to start. Recent logs:" >&2
+    echo "Service failed its startup health check. Recent logs:" >&2
     tail -n 40 "${LOG_FILE}" >&2 || true
+    if kill -0 "${pid}" 2>/dev/null; then
+        kill -- "-${pid}" 2>/dev/null || kill "${pid}" 2>/dev/null || true
+    fi
     rm -f "${PID_FILE}"
     exit 1
 }
@@ -72,7 +96,7 @@ stop_service() {
         return 0
     fi
 
-    kill "${pid}" 2>/dev/null || true
+    kill -- "-${pid}" 2>/dev/null || kill "${pid}" 2>/dev/null || true
     for _ in {1..10}; do
         if ! kill -0 "${pid}" 2>/dev/null; then
             rm -f "${PID_FILE}"
@@ -82,15 +106,19 @@ stop_service() {
         sleep 1
     done
 
-    kill -9 "${pid}" 2>/dev/null || true
+    kill -9 -- "-${pid}" 2>/dev/null || kill -9 "${pid}" 2>/dev/null || true
     rm -f "${PID_FILE}"
     echo "Service force stopped."
 }
 
 status_service() {
     if pid="$(running_pid)"; then
-        echo "Service is running with PID ${pid} on port ${PORT}."
-        return 0
+        if service_healthy; then
+            echo "Service is healthy with PID ${pid} on port ${PORT}."
+            return 0
+        fi
+        echo "Service process ${pid} is running but its health check failed." >&2
+        return 1
     fi
 
     echo "Service is not running."

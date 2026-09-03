@@ -131,6 +131,7 @@ export async function GET(request: NextRequest) {
             testResult: c.test_result,
             moduleId: mod.id,
             projectId: project.id,
+            publishStatus: project.publish_status,
             testerId: resolvedTester?.userId,
             testerName: resolvedTester?.testerName,
           });
@@ -156,6 +157,7 @@ export async function GET(request: NextRequest) {
           testerName: moduleTester?.testerName,
           resolvedTesterNames: moduleTesterNames.length > 0 ? moduleTesterNames.join('、') : undefined,
           isArchived: !!(project as Record<string, unknown>).is_archived,
+          publishStatus: project.publish_status,
         });
       }
 
