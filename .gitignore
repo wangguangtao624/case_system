@@ -103,5 +103,13 @@ Desktop.ini
 data/
 uploads/
 
+# Python (automation worker)
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# pixelide.ini is written into the process CWD by testlib.dll at init_qt()
+pixelide.ini
+
 # Environment
 .env.production

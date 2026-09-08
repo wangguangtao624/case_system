@@ -118,6 +118,56 @@ function initializeDatabase(db: Database.Database) {
     db.exec(`ALTER TABLE cases ADD COLUMN test_log TEXT DEFAULT ''`);
   } catch { /* column already exists */ }
 
+  // Automation execution binding and durable run history.
+  try { db.exec(`ALTER TABLE cases ADD COLUMN automation_key TEXT DEFAULT ''`); } catch { /* already exists */ }
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS automation_runs (
+      id TEXT PRIMARY KEY,
+      requested_by INTEGER NOT NULL REFERENCES users(id),
+      mode TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'queued',
+      case_ids TEXT NOT NULL,
+      ini_path TEXT NOT NULL,
+      bin_path TEXT NOT NULL,
+      log TEXT DEFAULT '',
+      error TEXT DEFAULT '',
+      created_at TEXT DEFAULT (datetime('now', 'localtime')),
+      finished_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS automation_case_results (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id TEXT NOT NULL REFERENCES automation_runs(id) ON DELETE CASCADE,
+      case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+      status TEXT NOT NULL,
+      log TEXT DEFAULT '',
+      screenshot_path TEXT DEFAULT '',
+      frame_id TEXT DEFAULT '',
+      finished_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_automation_results_run ON automation_case_results(run_id, id);
+  `);
+  try { db.exec(`ALTER TABLE automation_case_results ADD COLUMN frame_id TEXT DEFAULT ''`); } catch { /* already exists */ }
+  // 老库的 automation_runs 用的是 started_at，这里补一个 created_at 并回填，两边都可用。
+  try { db.exec(`ALTER TABLE automation_runs ADD COLUMN created_at TEXT DEFAULT ''`); } catch { /* already exists */ }
+  try { db.exec(`UPDATE automation_runs SET created_at=started_at WHERE started_at IS NOT NULL AND COALESCE(created_at,'')=''`); } catch { /* ignore */ }
+  // 原始 YUV 帧与寄存器读数：自动化控件展开后直接展示，不再回写进 test_log。
+  // 原始 YUV 帧与寄存器读数：自动化控件展开后直接展示，不再回写进 test_log。
+  try { db.exec(`ALTER TABLE automation_case_results ADD COLUMN raw_screenshot_path TEXT DEFAULT ''`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE automation_case_results ADD COLUMN readings TEXT DEFAULT ''`); } catch { /* already exists */ }
+  // 抓帧图片在 files 表里的记录，控件通过 /api/files/preview/<id> 出图。
+  try { db.exec(`ALTER TABLE automation_case_results ADD COLUMN image_file_id INTEGER`); } catch { /* already exists */ }
+  try { db.exec(`ALTER TABLE automation_case_results ADD COLUMN raw_file_id INTEGER`); } catch { /* already exists */ }
+
+  // 每个用例可单独覆盖的底层执行代码（"修改代码" 窗口保存到这里）。
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS automation_case_codes (
+      case_id INTEGER PRIMARY KEY REFERENCES cases(id) ON DELETE CASCADE,
+      automation_key TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT '',
+      updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+  `);
+
   // Migration: add source column to files table
   try {
     db.exec(`ALTER TABLE files ADD COLUMN source TEXT DEFAULT 'upload'`);

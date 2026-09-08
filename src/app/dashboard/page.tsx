@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { isHttpJiraLink, parseJiraLinks, serializeJiraLinks } from '@/lib/jira-links';
 import { ReportDownloadButton } from '@/components/report-download-button';
+import { AutomationRunPanel } from '@/components/automation-panel';
 
 async function copyText(text: string) {
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
@@ -175,6 +176,12 @@ interface CaseTester {
   id: number;
   name: string;
   assignmentLevel: string;
+}
+
+interface AutomationLaunch {
+  mode: 'single' | 'selected' | 'project';
+  caseIds: number[];
+  title: string;
 }
 
 interface ReportDialogState {
@@ -1513,6 +1520,13 @@ function SidebarTree({
   const [ioMenuNode, setIoMenuNode] = useState<{ id: string; dbId: number; name: string } | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [assigningNode, setAssigningNode] = useState<{ node: TreeNode; userId: string } | null>(null);
+  const [automationSelection, setAutomationSelection] = useState<Set<number>>(new Set());
+  const [automationLaunch, setAutomationLaunch] = useState<AutomationLaunch | null>(null);
+
+  const collectCaseIds = (node: TreeNode): number[] => node.type === 'case' ? [node.dbId] : (node.children || []).flatMap(collectCaseIds);
+  const toggleAutomationCase = (caseId: number) => setAutomationSelection(previous => {
+    const next = new Set(previous); if (next.has(caseId)) next.delete(caseId); else next.add(caseId); return next;
+  });
 
   // Close IO menu on outside click
   useEffect(() => {
@@ -1798,9 +1812,10 @@ function SidebarTree({
 
           {/* Status icon for cases */}
           {node.type === 'case' && (
-            <span className="w-4 h-4 flex items-center justify-center mr-1 mt-0.5 self-start flex-shrink-0">
-              {getStatusIcon(node.testResult)}
-            </span>
+            <>
+              <input type="checkbox" checked={automationSelection.has(node.dbId)} onChange={() => toggleAutomationCase(node.dbId)} onClick={e => e.stopPropagation()} className="mr-1 mt-0.5 h-3.5 w-3.5 flex-shrink-0" title="勾选后批量串行运行" />
+              <span className="w-4 h-4 flex items-center justify-center mr-1 mt-0.5 self-start flex-shrink-0">{getStatusIcon(node.testResult)}</span>
+            </>
           )}
 
           {/* Node name */}
@@ -1848,9 +1863,15 @@ function SidebarTree({
             </span>
           )}
 
+          {!isEditing && node.type === 'case' && (
+            <button className="p-0.5 rounded hover:bg-blue-100 ml-1 flex-shrink-0" title="运行此用例" onClick={e => { e.stopPropagation(); setAutomationLaunch({ mode: 'single', caseIds: [node.dbId], title: node.name }); }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="#0073E6"><path d="M8 5v14l11-7z" /></svg>
+            </button>
+          )}
+
           {/* Action buttons on hover - managers only */}
           {!isEditing && isManager && node.type !== 'project-space' && (
-            <span className="hidden group-hover:flex items-center gap-0.5 ml-1 flex-shrink-0">
+            <span className="invisible group-hover:visible flex items-center gap-0.5 ml-1 flex-shrink-0">
               {/* Assign tester icon - all levels */}
               <button
                 className="p-0.5 rounded hover:bg-purple-50"
@@ -1872,6 +1893,11 @@ function SidebarTree({
                   }}
                 >
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#10B981" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                </button>
+              )}
+              {node.type === 'project' && (
+                <button className="p-0.5 rounded hover:bg-blue-50" title="串行运行整个项目" onClick={e => { e.stopPropagation(); setAutomationLaunch({ mode: 'project', caseIds: collectCaseIds(node), title: `项目：${node.name}` }); }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="#2563EB"><path d="M8 5v14l11-7z" /></svg>
                 </button>
               )}
               {node.type === 'project' && (
@@ -1957,6 +1983,9 @@ function SidebarTree({
       <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: '#EEEEEE' }}>
         <span className="font-bold text-sm" style={{ color: '#333' }}>任务列表</span>
         <div className="flex items-center gap-1">
+          {automationSelection.size > 0 && (
+            <button onClick={() => setAutomationLaunch({ mode: 'selected', caseIds: [...automationSelection], title: `已选 ${automationSelection.size} 个用例` })} className="px-2 py-1 rounded text-xs text-white" style={{ backgroundColor: '#2563EB' }} title="按目录顺序串行运行已勾选用例">▶运行({automationSelection.size})</button>
+          )}
           {isManager && (
             <button
               onClick={() => setAddingNode({ parentId: 'root', type: 'project', name: '' })}
@@ -2437,8 +2466,24 @@ function SidebarTree({
         </div>,
         document.body
       )}
+      {automationLaunch && createPortal(<AutomationRunDialog launch={automationLaunch} onClose={() => { setAutomationLaunch(null); onTreeChange(); }} />, document.body)}
     </div>
   );
+}
+
+function AutomationRunDialog({ launch, onClose }: { launch: AutomationLaunch; onClose: () => void }) {
+  const [ini,setIni]=useState<File|null>(null); const [bin,setBin]=useState<File|null>(null); const [runId,setRunId]=useState('');
+  const [status,setStatus]=useState(''); const [log,setLog]=useState(''); const [error,setError]=useState(''); const running=['queued','running'].includes(status);
+  useEffect(()=>{if(!runId||!running)return;const timer=window.setInterval(async()=>{const response=await fetch(`/api/automation/runs?id=${encodeURIComponent(runId)}&_t=${Date.now()}`);const data=await response.json();if(!response.ok){setError(data.error||'读取运行状态失败');setStatus('failed');return;}setStatus(data.run.status);setLog(data.run.log||'');},800);return()=>window.clearInterval(timer);},[runId,running]);
+  const start=async()=>{if(!ini||!bin)return;setError('');setStatus('queued');const form=new FormData();form.append('ini',ini);form.append('bin',bin);form.append('mode',launch.mode);form.append('caseIds',JSON.stringify(launch.caseIds));const response=await fetch('/api/automation/runs',{method:'POST',body:form});const data=await response.json();if(!response.ok){setError(data.error||'启动失败');setStatus('failed');return;}setRunId(data.runId);setStatus('running');};
+  const label:Record<string,string>={queued:'排队中',running:'运行中',passed:'通过',failed:'失败'};
+  return <div className="fixed inset-0 z-[10000] flex items-center justify-center" style={{backgroundColor:'rgba(0,0,0,.42)'}}><div className="bg-white rounded-xl shadow-2xl p-5 w-[700px] max-w-[92vw] max-h-[88vh] overflow-auto">
+    <div className="flex justify-between"><div><h3 className="font-bold">自动化运行 · {launch.title}</h3><p className="text-xs text-gray-500">{launch.caseIds.length} 个用例按目录顺序串行执行；执行日志与抓帧图像记录在用例的“自动化执行记录”控件里，需要时一键导入到“测试过程及日志”</p></div><button onClick={onClose} disabled={running}>×</button></div>
+    {!runId&&<div className="space-y-3 mt-4"><label className="block text-sm">INI 文件<input type="file" accept=".ini" onChange={e=>setIni(e.target.files?.[0]||null)} className="block w-full mt-1 border rounded p-2"/></label><label className="block text-sm">bin 文件<input type="file" accept=".bin" onChange={e=>setBin(e.target.files?.[0]||null)} className="block w-full mt-1 border rounded p-2"/></label></div>}
+    {error&&<div className="mt-3 p-3 bg-red-50 text-red-700 rounded text-sm">{error}</div>}
+    {runId&&<div className="mt-4"><div className="text-sm">运行 ID：<code>{runId}</code>　状态：<b>{label[status]||status}</b></div><pre className="mt-2 text-xs p-3 rounded overflow-auto whitespace-pre-wrap bg-gray-900 text-green-100 min-h-[220px] max-h-[420px]">{log||'正在启动...'}</pre></div>}
+    <div className="flex justify-end gap-2 mt-4"><button onClick={onClose} disabled={running} className="px-4 py-2 border rounded disabled:opacity-40">关闭</button>{!runId&&<button onClick={start} disabled={!ini||!bin||running} className="px-4 py-2 text-white rounded disabled:opacity-40 bg-blue-600">开始运行</button>}</div>
+  </div></div>;
 }
 
 function ReportShareDialog({ value, onClose }: { value: ReportDialogState; onClose: () => void }) {
@@ -3569,6 +3614,21 @@ function CaseDetail({
           </div>
         )}
       </div>
+
+      {/* ============ Automation Execution Panel ============ */}
+      <AutomationRunPanel
+        caseId={form.id}
+        canImport={canEditResult}
+        onImport={(text) => {
+          const escapeHtml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+          const [head, ...rest] = text.split('\n');
+          const body = rest.join('\n');
+          const block = `<hr/><p><strong>${escapeHtml(head || '自动化执行记录')}</strong></p>`
+            + (body ? `<pre>${escapeHtml(body)}</pre>` : '');
+          handleFieldChange('test_log', (form.test_log || '') + block);
+        }}
+        onImportNotice={(text) => setMessage({ type: 'success', text })}
+      />
 
       {/* Save Buttons */}
       <div className="flex justify-end gap-2">
