@@ -38,10 +38,16 @@ export async function GET(request: NextRequest) {
     }
 
     // Get all assignments for tree display (tester badges)
+    // Generic assignment targets cannot have a database foreign key. Ignore
+    // orphaned rows here so old imports/deletions do not make every tree refresh
+    // scan and map thousands of targets that can no longer be displayed.
     const assignments = db.prepare(`
       SELECT a.level, a.target_id, a.user_id, u.username as tester_name
       FROM assignments a
       JOIN users u ON a.user_id = u.id
+      WHERE (a.level = 'project' AND EXISTS (SELECT 1 FROM projects p WHERE p.id = a.target_id))
+         OR (a.level = 'module' AND EXISTS (SELECT 1 FROM modules m WHERE m.id = a.target_id))
+         OR (a.level = 'case' AND EXISTS (SELECT 1 FROM cases c WHERE c.id = a.target_id))
     `).all() as { level: string; target_id: number; user_id: number; tester_name: string }[];
 
     // Build a lookup: "level-targetId" -> tester info
@@ -97,7 +103,7 @@ export async function GET(request: NextRequest) {
         const moduleTester = assignmentMap.get(`module-${mod.id}`);
 
         // Get cases for this module
-        const cases = db.prepare('SELECT * FROM cases WHERE module_id = ? ORDER BY sort_order, id').all(mod.id) as {
+        const cases = db.prepare('SELECT id, case_name, case_no, test_result, sort_order FROM cases WHERE module_id = ? ORDER BY sort_order, id').all(mod.id) as {
           id: number;
           case_name: string;
           case_no: string;

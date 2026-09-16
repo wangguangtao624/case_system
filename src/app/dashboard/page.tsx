@@ -113,6 +113,7 @@ interface CaseData {
   test_result_note: string;
   light: string;
   temperature: string;
+  device_options?: string[];
   module_name: string;
   module_id: number;
   project_name: string;
@@ -361,6 +362,7 @@ interface BugItem {
   created_at: string;
   updated_at: string;
   step_logs: BugStepLog[];
+  detailsLoaded?: boolean;
 }
 
 interface BugViewModel extends BugItem {
@@ -2605,7 +2607,10 @@ function CaseDetail({
   const [jiraLinkError, setJiraLinkError] = useState(false);
   const [editingMode, setEditingMode] = useState(false); // Manager edit mode toggle
   const [showTesterAssign, setShowTesterAssign] = useState(false); // Tester assign dropdown
+  const [showDeviceOptions, setShowDeviceOptions] = useState(false);
+  const [applyingDevice, setApplyingDevice] = useState(false);
   const testerAssignRef = useRef<HTMLDivElement>(null);
+  const deviceSelectRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     // Normalize null values to empty strings to avoid React "value prop should not be null" warning
@@ -2631,10 +2636,12 @@ function CaseDetail({
       executor: caseData.executor ?? '',
       test_result_note: caseData.test_result_note ?? '',
       priority: caseData.priority ?? '',
+      device_options: caseData.device_options ?? [],
     });
     setEditingMode(false); // Reset edit mode when case changes
     setEditingJira(false);
     setJiraLinkError(false);
+    setShowDeviceOptions(false);
   }, [caseData]);
 
   // Close tester assign dropdown on outside click
@@ -2649,6 +2656,16 @@ function CaseDetail({
     }
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [showTesterAssign]);
+
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (deviceSelectRef.current && !deviceSelectRef.current.contains(event.target as Node)) {
+        setShowDeviceOptions(false);
+      }
+    };
+    if (showDeviceOptions) document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showDeviceOptions]);
 
   // Helper: recursively read all files from a drag-and-drop directory entry
   // Returns files array and a map of file index -> relative path
@@ -2814,7 +2831,10 @@ function CaseDetail({
         setMessage({ type: 'success', text: saveType === 'core' ? '基础信息保存成功' : '测试结果保存成功' });
         setEditingMode(false);
         setEditingJira(false);
-        const updatedForm = { ...form, jira_link: serializeJiraLinks(form.jira_link) };
+        const deviceOptions = Array.isArray(data.deviceOptions)
+          ? data.deviceOptions.filter((device: unknown): device is string => typeof device === 'string')
+          : (form.device_options || []);
+        const updatedForm = { ...form, jira_link: serializeJiraLinks(form.jira_link), device_options: deviceOptions };
         setForm(updatedForm);
         onUpdate(updatedForm);
       } else {
@@ -2825,6 +2845,37 @@ function CaseDetail({
     } finally {
       setSaving(false);
       setTimeout(() => setMessage(null), 1000);
+    }
+  };
+
+  const handleApplyDeviceToProject = async () => {
+    const deviceName = form.test_device.trim();
+    if (!deviceName) {
+      setMessage({ type: 'error', text: '请先填写或选择测试设备' });
+      return;
+    }
+    setApplyingDevice(true);
+    setShowDeviceOptions(false);
+    try {
+      const response = await fetch('/api/cases', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: form.id, test_device: deviceName }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.success) throw new Error(data.error || '批量应用失败');
+      const deviceOptions = Array.isArray(data.deviceOptions)
+        ? data.deviceOptions.filter((device: unknown): device is string => typeof device === 'string')
+        : (form.device_options || []);
+      const updatedForm = { ...form, test_device: deviceName, device_options: deviceOptions };
+      setForm(updatedForm);
+      onUpdate(updatedForm);
+      setMessage({ type: 'success', text: `已应用到 ${data.updatedCount || 0} 个未填写的 Case` });
+    } catch (error) {
+      setMessage({ type: 'error', text: error instanceof Error ? error.message : '批量应用失败' });
+    } finally {
+      setApplyingDevice(false);
+      setTimeout(() => setMessage(null), 1800);
     }
   };
 
@@ -2978,6 +3029,9 @@ function CaseDetail({
   const canEditCore = permissions.canEditCore && (isManager ? editingMode : permissions.canEditCore);
   // Whether the current user can edit result fields
   const canEditResult = permissions.canEditResult;
+  const filteredDeviceOptions = (form.device_options || []).filter(device =>
+    !form.test_device.trim() || device.toLocaleLowerCase().includes(form.test_device.trim().toLocaleLowerCase())
+  );
   const jiraLinkRows = form.jira_link.split('\n');
   const displayJiraLinks = parseJiraLinks(form.jira_link);
 
@@ -3330,7 +3384,7 @@ function CaseDetail({
       </div>
 
       {/* ============ Result Sub Card (visually separated) ============ */}
-      <div className="rounded-lg border mb-4 overflow-hidden" style={{ borderColor: '#D1D5DB', backgroundColor: '#FAFBFC' }}>
+      <div className="rounded-lg border mb-4 overflow-visible" style={{ borderColor: '#D1D5DB', backgroundColor: '#FAFBFC' }}>
         <table className="w-full" style={{ borderCollapse: 'collapse', tableLayout: 'fixed' }}>
           <colgroup>
             <col style={{ width: '80px' }} />
@@ -3343,15 +3397,59 @@ function CaseDetail({
             <tr style={{ borderBottom: '1px solid #E8E8E8' }}>
               <td className="px-3 py-2 text-xs font-medium whitespace-nowrap" style={{ color: '#6B7280', backgroundColor: '#F5F5F5', borderRight: '1px solid #E8E8E8' }}>测试设备</td>
               <td colSpan={3} className="px-2 py-1.5" style={{ backgroundColor: 'transparent' }}>
-                <input type="text" value={form.test_device || ''}
-                  onChange={(e) => handleFieldChange('test_device', e.target.value)}
-                  readOnly={!canEditResult}
-                  className="w-full px-2 py-1 border rounded text-sm focus:outline-none focus:ring-1"
-                  style={readOnlyInputStyle(canEditResult)}
-                  onFocus={(e) => { if (canEditResult) { e.target.style.borderColor = '#0073E6'; e.target.style.boxShadow = '0 0 0 2px rgba(0,115,230,0.1)'; } }}
-                  onBlur={(e) => { e.target.style.borderColor = 'transparent'; e.target.style.boxShadow = 'none'; }}
-                  placeholder="测试设备型号、配置等"
-                />
+                <div className="flex items-center gap-2">
+                  <div ref={deviceSelectRef} className="relative min-w-0 flex-1">
+                    <input type="text" value={form.test_device || ''}
+                      onChange={(e) => { handleFieldChange('test_device', e.target.value); setShowDeviceOptions(true); }}
+                      readOnly={!canEditResult}
+                      maxLength={100}
+                      className="w-full px-2 py-1 pr-8 border rounded text-xs focus:outline-none focus:ring-1"
+                      style={readOnlyInputStyle(canEditResult)}
+                      onFocus={(e) => { if (canEditResult) { setShowDeviceOptions(true); e.target.style.borderColor = '#0073E6'; e.target.style.boxShadow = '0 0 0 2px rgba(0,115,230,0.1)'; } }}
+                      onBlur={(e) => { e.target.style.borderColor = 'transparent'; e.target.style.boxShadow = 'none'; }}
+                      placeholder="测试设备型号、配置等"
+                    />
+                    {canEditResult && (
+                      <button
+                        type="button"
+                        onClick={() => setShowDeviceOptions(open => !open)}
+                        className="absolute inset-y-0 right-0 flex w-8 items-center justify-center rounded-r text-gray-400 hover:text-blue-600"
+                        aria-label="选择测试设备"
+                      >
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 6 4 4 4-4" /></svg>
+                      </button>
+                    )}
+                    {canEditResult && showDeviceOptions && filteredDeviceOptions.length > 0 && (
+                      <div className="absolute left-0 right-0 top-full z-[70] mt-1 max-h-48 overflow-y-auto rounded-md border bg-white py-1 shadow-lg" style={{ borderColor: '#D1D5DB' }}>
+                        {filteredDeviceOptions.map(device => (
+                            <button
+                              type="button"
+                              key={device}
+                              className="block w-full truncate px-2.5 py-1.5 text-left text-xs hover:bg-blue-50"
+                              style={{ color: '#374151' }}
+                              title={device}
+                              onMouseDown={(event) => event.preventDefault()}
+                              onClick={() => { handleFieldChange('test_device', device); setShowDeviceOptions(false); }}
+                            >
+                              {device}
+                            </button>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                  {canEditResult && (
+                    <button
+                      type="button"
+                      onClick={handleApplyDeviceToProject}
+                      disabled={applyingDevice || saving || !form.test_device.trim()}
+                      className="shrink-0 rounded border px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                      style={{ color: '#0073E6', borderColor: '#B3D9FF', backgroundColor: '#FFFFFF' }}
+                      title="应用到当前项目中所有尚未填写测试设备的 Case，不覆盖已有内容"
+                    >
+                      {applyingDevice ? '应用中...' : '应用到全部空白 Case'}
+                    </button>
+                  )}
+                </div>
               </td>
             </tr>
             {/* Row 2: 测试结果 | JIRA链接 */}
@@ -8954,6 +9052,7 @@ function BugManagementPanel({
   const [filter, setFilter] = useState<'pending' | 'mine' | 'closed' | 'all'>('pending');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [expandedBugId, setExpandedBugId] = useState<number | null>(null);
+  const [loadingBugId, setLoadingBugId] = useState<number | null>(null);
   const [expandedSubmitDetails, setExpandedSubmitDetails] = useState<Record<number, boolean>>({});
   const [drafts, setDrafts] = useState<Record<number, string>>({});
   const [submittingAction, setSubmittingAction] = useState<number | null>(null);
@@ -8973,6 +9072,29 @@ function BugManagementPanel({
   useEffect(() => {
     if (show) loadBugs();
   }, [show, loadBugs]);
+
+  const toggleBugDetails = useCallback(async (bug: BugItem) => {
+    if (expandedBugId === bug.id) {
+      setExpandedBugId(null);
+      return;
+    }
+
+    setExpandedBugId(bug.id);
+    if (bug.detailsLoaded) return;
+
+    setLoadingBugId(bug.id);
+    try {
+      const res = await fetch(`/api/bugs?id=${bug.id}`);
+      const data = await res.json();
+      if (!res.ok || !data.bug) throw new Error(data.error || '加载问题详情失败');
+      setBugs(current => current.map(item => item.id === bug.id ? data.bug as BugItem : item));
+    } catch {
+      showToast('error', '加载问题详情失败');
+      setExpandedBugId(null);
+    } finally {
+      setLoadingBugId(null);
+    }
+  }, [expandedBugId]);
 
   const showToast = (type: 'success' | 'error', text: string) => {
     setMessage({ type, text });
@@ -9255,7 +9377,7 @@ function BugManagementPanel({
                     >
                       <button
                         type="button"
-                        onClick={() => startTransition(() => setExpandedBugId(isExpanded ? null : bug.id))}
+                        onClick={() => startTransition(() => { void toggleBugDetails(bug); })}
                         className="min-w-0 flex-1 text-left"
                       >
                         <div className="min-w-0 flex-1">
@@ -9312,6 +9434,13 @@ function BugManagementPanel({
 
                     {isExpanded && (
                       <div className="px-4 pb-4 space-y-4">
+                        {loadingBugId === bug.id && (
+                          <div className="py-8 text-center text-sm" style={{ color: '#6B7280' }}>
+                            正在加载问题详情...
+                          </div>
+                        )}
+                        {loadingBugId !== bug.id && (
+                          <>
                         {isActionable && (
                           <div
                             className="rounded-2xl border px-4 py-3 flex flex-wrap items-center gap-3"
@@ -9625,6 +9754,8 @@ function BugManagementPanel({
                             </div>
                           </div>
                         </div>
+                          </>
+                        )}
                       </div>
                     )}
                   </div>

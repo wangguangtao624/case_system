@@ -47,6 +47,17 @@ function normalizeWorkflowStatus(status?: string | null) {
   return 'processing';
 }
 
+// Images pasted into the rich-text editor are stored as data URLs. Returning all
+// of them in the board list made a ten-item list grow to several megabytes. The
+// list only needs text for its preview; full rich text is loaded for one bug when
+// the user expands it.
+function makeDescriptionPreview(html: string) {
+  return html
+    .replace(/<img\b[^>]*>/gi, ' [图片] ')
+    .replace(/data:[^;"']+;base64,[^"']+/gi, '[图片]')
+    .slice(0, 2_000);
+}
+
 function getBugById(id: number) {
   const db = getDb();
   const columns = getBugColumnNames();
@@ -134,6 +145,7 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url);
     const filter = searchParams.get('status');
     const badgeOnly = searchParams.get('badge') === '1';
+    const requestedId = Number(searchParams.get('id'));
     const db = getDb();
     const columns = getBugColumnNames();
     const workflowStatusExpr = columns.has('workflow_status')
@@ -199,31 +211,41 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ count: result?.count || 0, currentUsername: user.username, fixerUsername: BUG_FIXER_USERNAME });
     }
 
+    if (Number.isInteger(requestedId) && requestedId > 0) {
+      const bug = getBugById(requestedId);
+      if (!bug) return NextResponse.json({ error: '问题单不存在' }, { status: 404 });
+
+      const stepLogs = db.prepare(`
+        SELECT id, bug_id, step_type, action_type, round, actor_id, actor_name, content, created_at
+        FROM bug_step_logs
+        WHERE bug_id = ?
+        ORDER BY created_at ASC, id ASC
+      `).all(requestedId) as BugStepLog[];
+
+      return NextResponse.json({
+        bug: { ...bug, step_logs: stepLogs, detailsLoaded: true },
+        currentUserId: user.id,
+        currentUsername: user.username,
+        fixerUsername: BUG_FIXER_USERNAME,
+        isManager: isManagerUser(user.username),
+      });
+    }
+
     query += ' ORDER BY CASE WHEN workflow_status = \'closed\' THEN 1 ELSE 0 END, updated_at DESC, created_at DESC';
 
     const bugs = db.prepare(query).all({ username: user.username }) as BugRow[];
-    const bugIds = bugs.map(bug => bug.id);
-    const logs = bugIds.length > 0
-      ? db.prepare(`
-          SELECT id, bug_id, step_type, action_type, round, actor_id, actor_name, content, created_at
-          FROM bug_step_logs
-          WHERE bug_id IN (${bugIds.map(() => '?').join(', ')})
-          ORDER BY created_at ASC, id ASC
-        `).all(...bugIds) as BugStepLog[]
-      : [];
-
-    const logsByBugId = logs.reduce<Record<number, BugStepLog[]>>((acc, log) => {
-      if (!acc[log.bug_id]) acc[log.bug_id] = [];
-      acc[log.bug_id].push(log);
-      return acc;
-    }, {});
 
     return NextResponse.json({
       bugs: bugs.map(bug => ({
         ...bug,
+        description: makeDescriptionPreview(bug.description),
+        // Processing notes can also contain pasted screenshots. They are only
+        // rendered in the expanded detail view, so keep them out of the list.
+        resolve_note: '',
         workflow_status: normalizeWorkflowStatus(bug.workflow_status),
         current_round: bug.current_round && bug.current_round > 0 ? bug.current_round : 1,
-        step_logs: logsByBugId[bug.id] || [],
+        step_logs: [],
+        detailsLoaded: false,
       })),
       currentUserId: user.id,
       currentUsername: user.username,

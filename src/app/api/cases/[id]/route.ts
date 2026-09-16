@@ -60,6 +60,25 @@ export async function GET(
     const projectData = db.prepare('SELECT is_archived FROM projects WHERE id = ?').get((caseData as Record<string, unknown>).project_id as number) as { is_archived: number } | undefined;
     const isArchived = projectData?.is_archived === 1;
 
+    // Build suggestions from devices that are currently used by cases in this project.
+    // When the last case stops using a device, it automatically disappears here.
+    const projectDevices = db.prepare(`
+      SELECT c.test_device AS device_name, c.updated_at AS created_at
+      FROM cases c
+      JOIN modules m ON m.id = c.module_id
+      WHERE m.project_id = ? AND TRIM(COALESCE(c.test_device, '')) <> ''
+      ORDER BY c.updated_at DESC, c.id DESC
+    `).all((caseData as Record<string, unknown>).project_id) as Array<{ device_name: string; created_at: string }>;
+    const seenDevices = new Set<string>();
+    const deviceOptions = projectDevices
+      .map(row => row.device_name.trim())
+      .filter(deviceName => {
+        const key = deviceName.toLocaleLowerCase();
+        if (!deviceName || seenDevices.has(key)) return false;
+        seenDevices.add(key);
+        return true;
+      });
+
     let canEditCore = isManager;
     let canEditResult = isManager || isAssignedTester;
 
@@ -69,7 +88,11 @@ export async function GET(
     }
 
     return NextResponse.json({
-      case: { ...(caseData as Record<string, unknown>), is_archived: isArchived ? 1 : 0 },
+      case: {
+        ...(caseData as Record<string, unknown>),
+        is_archived: isArchived ? 1 : 0,
+        device_options: deviceOptions,
+      },
       files,
       tester: testerInfo?.tester_id ? {
         id: testerInfo.tester_id,

@@ -80,6 +80,9 @@ function initializeDatabase(db: Database.Database) {
       created_at TEXT DEFAULT (datetime('now', 'localtime'))
     );
 
+    CREATE INDEX IF NOT EXISTS idx_files_case_created
+      ON files(case_id, created_at, id);
+
     CREATE TABLE IF NOT EXISTS project_space_files (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -111,6 +114,7 @@ function initializeDatabase(db: Database.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_report_links_project ON report_links(project_id);
+
   `);
 
   // Migration: add test_log column if not exists

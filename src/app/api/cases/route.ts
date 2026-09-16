@@ -37,6 +37,25 @@ function resolveCaseTester(db: ReturnType<typeof import('@/lib/db').getDb>, case
   return null;
 }
 
+function getProjectDeviceOptions(db: ReturnType<typeof import('@/lib/db').getDb>, projectId: number): string[] {
+  const projectDevices = db.prepare(`
+    SELECT c.test_device AS device_name
+    FROM cases c
+    JOIN modules m ON m.id = c.module_id
+    WHERE m.project_id = ? AND TRIM(COALESCE(c.test_device, '')) <> ''
+    ORDER BY c.updated_at DESC, c.id DESC
+  `).all(projectId) as Array<{ device_name: string }>;
+  const seenDevices = new Set<string>();
+  return projectDevices
+    .map(row => row.device_name.trim())
+    .filter(deviceName => {
+      const key = deviceName.toLocaleLowerCase();
+      if (!deviceName || seenDevices.has(key)) return false;
+      seenDevices.add(key);
+      return true;
+    });
+}
+
 export async function GET(request: NextRequest) {
   try {
     const user = await getCurrentUser();
@@ -114,7 +133,12 @@ export async function PUT(request: NextRequest) {
     if (!id) return NextResponse.json({ error: '缺少用例ID' }, { status: 400 });
 
     const db = getDb();
-    const caseRow = db.prepare('SELECT module_id FROM cases WHERE id = ?').get(id) as { module_id: number } | undefined;
+    const caseRow = db.prepare(`
+      SELECT c.module_id, m.project_id
+      FROM cases c
+      JOIN modules m ON m.id = c.module_id
+      WHERE c.id = ?
+    `).get(id) as { module_id: number; project_id: number } | undefined;
     if (!caseRow) return NextResponse.json({ error: '用例不存在' }, { status: 404 });
 
     if (!moduleExists(db, caseRow.module_id)) {
@@ -213,10 +237,85 @@ export async function PUT(request: NextRequest) {
       `).run(test_device || '', test_result, normalizedJiraLinks, fail_note || '', test_log || '', test_result_note || '', user.username, id);
     }
 
-    return NextResponse.json({ success: true });
+    const deviceOptions = getProjectDeviceOptions(db, caseRow.project_id);
+
+    return NextResponse.json({ success: true, deviceOptions });
   } catch (error) {
     console.error('Update case error:', error);
     return NextResponse.json({ error: '更新用例失败' }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user) return NextResponse.json({ error: '未登录' }, { status: 401 });
+
+    const data = await request.json();
+    const caseId = Number(data.id);
+    const deviceName = typeof data.test_device === 'string' ? data.test_device.trim() : '';
+    if (!caseId) return NextResponse.json({ error: '缺少用例ID' }, { status: 400 });
+    if (!deviceName) return NextResponse.json({ error: '请先填写或选择测试设备' }, { status: 400 });
+    if (deviceName.length > 100) return NextResponse.json({ error: '测试设备不能超过100个字符' }, { status: 400 });
+
+    const db = getDb();
+    const sourceCase = db.prepare(`
+      SELECT c.id, m.project_id, p.is_archived, p.publish_status
+      FROM cases c
+      JOIN modules m ON m.id = c.module_id
+      JOIN projects p ON p.id = m.project_id
+      WHERE c.id = ?
+    `).get(caseId) as { id: number; project_id: number; is_archived: number; publish_status: string } | undefined;
+    if (!sourceCase) return NextResponse.json({ error: '用例不存在' }, { status: 404 });
+
+    const manager = isManager(user.username);
+    if (sourceCase.publish_status === 'draft' && !manager) {
+      return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
+    }
+    if (sourceCase.is_archived === 1 && !manager) {
+      return NextResponse.json({ error: '归档项目不允许修改测试结果' }, { status: 403 });
+    }
+    if (!manager) {
+      const tester = resolveCaseTester(db, caseId);
+      if (!tester || tester.userId !== user.id) {
+        return NextResponse.json({ error: '无编辑权限，该用例未分配给你' }, { status: 403 });
+      }
+    }
+
+    const blankCases = db.prepare(`
+      SELECT c.id
+      FROM cases c
+      JOIN modules m ON m.id = c.module_id
+      WHERE m.project_id = ? AND TRIM(COALESCE(c.test_device, '')) = ''
+    `).all(sourceCase.project_id) as Array<{ id: number }>;
+    const editableCaseIds = manager
+      ? blankCases.map(item => item.id)
+      : blankCases
+          .filter(item => resolveCaseTester(db, item.id)?.userId === user.id)
+          .map(item => item.id);
+
+    const applyDevice = db.transaction((caseIds: number[]) => {
+      const update = db.prepare(`
+        UPDATE cases
+        SET test_device = ?, updated_at = datetime('now', 'localtime')
+        WHERE id = ? AND TRIM(COALESCE(test_device, '')) = ''
+      `);
+      let updatedCount = 0;
+      for (const targetCaseId of caseIds) {
+        updatedCount += update.run(deviceName, targetCaseId).changes;
+      }
+      return updatedCount;
+    });
+    const updatedCount = applyDevice(editableCaseIds);
+
+    return NextResponse.json({
+      success: true,
+      updatedCount,
+      deviceOptions: getProjectDeviceOptions(db, sourceCase.project_id),
+    });
+  } catch (error) {
+    console.error('Apply test device error:', error);
+    return NextResponse.json({ error: '批量应用测试设备失败' }, { status: 500 });
   }
 }
 
