@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
     if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
 
     // Load all users for Tester resolution
-    const allUsers = db.prepare('SELECT id, username FROM users').all() as { id: number; username: string }[];
+    const allUsers = db.prepare('SELECT id, username FROM users WHERE COALESCE(is_frozen, 0) = 0').all() as { id: number; username: string }[];
     const userByUsername = new Map(allUsers.map(u => [u.username, u]));
 
     const XLSX = await import('xlsx');

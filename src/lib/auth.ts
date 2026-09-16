@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { resolveWorkspacePath } from '@/lib/runtime';
+import { getDb } from '@/lib/db';
 
 function getJwtSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -97,7 +98,13 @@ export async function getCurrentUser(): Promise<UserPayload | null> {
   if (!token) return null;
   const user = await verifyToken(token);
   if (!user) return null;
-  return user;
+  const currentUser = getDb().prepare(`
+    SELECT id, username, role, COALESCE(is_frozen, 0) AS is_frozen
+    FROM users
+    WHERE id = ?
+  `).get(user.id) as { id: number; username: string; role: 'admin' | 'user'; is_frozen: number } | undefined;
+  if (!currentUser || currentUser.is_frozen === 1 || currentUser.username !== user.username) return null;
+  return { id: currentUser.id, username: currentUser.username, role: currentUser.role };
 }
 
 export function isManagerUser(username: string): boolean {

@@ -10,15 +10,19 @@ export async function POST(request: NextRequest) {
     }
 
     const db = getDb();
-    const user = db.prepare('SELECT id, username, password, role FROM users WHERE username = ?').get(username) as {
+    const user = db.prepare('SELECT id, username, password, role, COALESCE(is_frozen, 0) AS is_frozen FROM users WHERE username = ?').get(username) as {
       id: number;
       username: string;
       password: string;
       role: string;
+      is_frozen: number;
     } | undefined;
 
     if (!user || !verifyPassword(password, user.password)) {
       return NextResponse.json({ error: '用户名或密码错误' }, { status: 401 });
+    }
+    if (user.is_frozen === 1) {
+      return NextResponse.json({ error: '账号已冻结，请联系管理员' }, { status: 403 });
     }
 
     const token = await createToken({

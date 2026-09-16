@@ -15,11 +15,51 @@ export async function GET() {
       return NextResponse.json({ error: '无权限' }, { status: 403 });
     }
     const db = getDb();
-    const users = db.prepare('SELECT id, username, role, created_at FROM users ORDER BY id').all();
+    const users = db.prepare(`
+      SELECT id, username, role, COALESCE(is_frozen, 0) AS is_frozen, frozen_at, created_at
+      FROM users
+      ORDER BY id
+    `).all();
     return NextResponse.json({ users });
   } catch (error) {
     console.error('Get users error:', error);
     return NextResponse.json({ error: '获取用户列表失败' }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: NextRequest) {
+  try {
+    const user = await getCurrentUser();
+    if (!user || !isManagerOrAdmin(user)) {
+      return NextResponse.json({ error: '无权限' }, { status: 403 });
+    }
+
+    const { userId, frozen } = await request.json();
+    const targetUserId = Number(userId);
+    if (!targetUserId || typeof frozen !== 'boolean') {
+      return NextResponse.json({ error: '参数错误' }, { status: 400 });
+    }
+    if (targetUserId === user.id && frozen) {
+      return NextResponse.json({ error: '不可冻结当前登录账号' }, { status: 400 });
+    }
+
+    const db = getDb();
+    const target = db.prepare('SELECT id, username, role FROM users WHERE id = ?').get(targetUserId) as { id: number; username: string; role: string } | undefined;
+    if (!target) return NextResponse.json({ error: '用户不存在' }, { status: 404 });
+    if (target.role === 'admin' && frozen) {
+      return NextResponse.json({ error: '不可冻结管理员账号' }, { status: 400 });
+    }
+
+    db.prepare(`
+      UPDATE users
+      SET is_frozen = ?, frozen_at = CASE WHEN ? = 1 THEN datetime('now', 'localtime') ELSE NULL END
+      WHERE id = ?
+    `).run(frozen ? 1 : 0, frozen ? 1 : 0, targetUserId);
+
+    return NextResponse.json({ success: true, username: target.username, isFrozen: frozen });
+  } catch (error) {
+    console.error('Update user frozen status error:', error);
+    return NextResponse.json({ error: '更新用户状态失败' }, { status: 500 });
   }
 }
 

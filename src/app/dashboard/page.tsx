@@ -162,6 +162,8 @@ interface UserItem {
   id: number;
   username: string;
   role: string;
+  is_frozen?: number;
+  frozen_at?: string | null;
   created_at: string;
 }
 
@@ -331,6 +333,8 @@ interface JiraBoardData {
   projects: string[];
   generatedAt: string;
 }
+
+type JiraIssueTypeFilter = '需求' | '故障' | '问题' | '任务' | '子任务' | 'Epic';
 
 interface BugStepLog {
   id: number;
@@ -2352,7 +2356,7 @@ function SidebarTree({
               style={{ borderColor: '#D1D5DB', color: '#374151' }}
             >
               <option value="">选择测试者...</option>
-              {allUsers.map(u => (
+              {allUsers.filter(u => !u.is_frozen).map(u => (
                 <option key={u.id} value={String(u.id)}>{u.username}</option>
               ))}
             </select>
@@ -3194,7 +3198,7 @@ function CaseDetail({
                 {showTesterAssign && isManager && (
                   <div className="absolute right-0 top-full mt-1 bg-white rounded-md shadow-lg border z-30" style={{ minWidth: '160px', borderColor: '#DDD6FE' }}>
                     <div className="px-3 py-2 text-xs font-medium" style={{ color: '#6B7280', borderBottom: '1px solid #F0F0F0' }}>分配测试者</div>
-                    {allUsers.map(u => (
+                    {allUsers.filter(u => !u.is_frozen).map(u => (
                       <button
                         key={u.id}
                         className="w-full text-left px-3 py-2 text-sm hover:bg-gray-50 transition-colors"
@@ -3762,6 +3766,24 @@ function UserManagementDialog({ onClose }: { onClose: () => void }) {
     setTimeout(() => setMessage(null), 1000);
   };
 
+  const handleToggleFrozen = async (target: UserItem) => {
+    const shouldFreeze = !target.is_frozen;
+    if (shouldFreeze && !confirm(`确定冻结用户“${target.username}”吗？\n\n冻结后该账号将立即无法登录和修改数据，但历史项目、测试记录及分配信息都会保留。`)) return;
+    const res = await fetch('/api/users', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userId: target.id, frozen: shouldFreeze }),
+    });
+    const data = await res.json();
+    if (data.success) {
+      await loadUsers();
+      setMessage({ type: 'success', text: shouldFreeze ? '用户已冻结，历史数据已保留' : '用户已解冻' });
+    } else {
+      setMessage({ type: 'error', text: data.error || '更新用户状态失败' });
+    }
+    setTimeout(() => setMessage(null), 1600);
+  };
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ backgroundColor: 'rgba(0,0,0,0.3)' }}>
       <div className="bg-white rounded-lg shadow-xl w-full max-w-lg mx-4" style={{ maxHeight: '80vh' }}>
@@ -3821,16 +3843,24 @@ function UserManagementDialog({ onClose }: { onClose: () => void }) {
           {/* User list */}
           <div className="space-y-1">
             {users.map(u => (
-              <div key={u.id} className="flex items-center justify-between px-3 py-2 border rounded-md" style={{ borderColor: '#EEEEEE' }}>
+              <div key={u.id} className="flex items-center justify-between px-3 py-2 border rounded-md" style={{ borderColor: u.is_frozen ? '#FECACA' : '#EEEEEE', backgroundColor: u.is_frozen ? '#FFF7F7' : '#FFFFFF' }}>
                 <div className="flex items-center gap-2">
-                  <span className="text-sm" style={{ color: '#333' }}>{u.username}</span>
+                  <span className="text-sm" style={{ color: u.is_frozen ? '#6B7280' : '#333' }}>{u.username}</span>
                   <span className="text-xs px-1.5 py-0.5 rounded" style={{ backgroundColor: u.role === 'admin' ? '#E6F2FF' : '#F0F0F0', color: u.role === 'admin' ? '#0073E6' : '#666' }}>
                     {u.role === 'admin' ? '管理员' : '普通用户'}
                   </span>
+                  {Boolean(u.is_frozen) && (
+                    <span className="text-xs px-1.5 py-0.5 rounded" style={{ backgroundColor: '#FEE2E2', color: '#B91C1C' }}>
+                      已冻结
+                    </span>
+                  )}
                 </div>
                 {u.role !== 'admin' && (
                   <div className="flex gap-1">
-                    <button onClick={() => handleResetPassword(u.id)} className="px-2 py-0.5 text-xs rounded hover:bg-gray-100" style={{ color: '#0073E6' }}>
+                    <button onClick={() => handleToggleFrozen(u)} className="px-2 py-0.5 text-xs rounded hover:bg-amber-50" style={{ color: u.is_frozen ? '#059669' : '#D97706' }}>
+                      {u.is_frozen ? '解冻' : '冻结'}
+                    </button>
+                    <button onClick={() => handleResetPassword(u.id)} disabled={Boolean(u.is_frozen)} className="px-2 py-0.5 text-xs rounded hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-40" style={{ color: '#0073E6' }}>
                       重置密码
                     </button>
                     <button onClick={() => handleDelete(u.id)} className="px-2 py-0.5 text-xs rounded hover:bg-red-50" style={{ color: '#EF4444' }}>
@@ -7464,7 +7494,7 @@ function ProjectExecutionSummary({
               style={{ borderColor: '#D1D5DB', color: '#374151' }}
             >
               <option value="">选择测试者...</option>
-              {allUsers.map(u => (
+              {allUsers.filter(u => !u.is_frozen).map(u => (
                 <option key={u.id} value={String(u.id)}>{u.username}</option>
               ))}
             </select>
@@ -7509,7 +7539,7 @@ function JiraBoardView({
   const [statusFilter, setStatusFilter] = useState<'all' | 'open' | 'done'>('open');
   const [userFilter, setUserFilter] = useState<string>('all');
   const [projectFilter, setProjectFilter] = useState<string>('all');
-  const [issueTypeFilters, setIssueTypeFilters] = useState<Array<'需求' | '故障' | '任务' | '子任务' | 'Epic'>>([]);
+  const [issueTypeFilters, setIssueTypeFilters] = useState<JiraIssueTypeFilter[]>([]);
   const [keyword, setKeyword] = useState('');
   const [showPendingOnly, setShowPendingOnly] = useState(true);
   const [expandedUserKey, setExpandedUserKey] = useState<string | null>(null);
@@ -7583,6 +7613,7 @@ function JiraBoardView({
     return issueTypeFilters.some(filter => {
       if (filter === '需求') return normalized.includes('需求') || normalized.includes('story');
       if (filter === '故障') return normalized.includes('故障') || normalized.includes('bug');
+      if (filter === '问题') return normalized === '问题' || normalized === 'issue';
       if (filter === '任务') return normalized === '任务' || normalized === 'task';
       if (filter === '子任务') return normalized.includes('子任务') || normalized.includes('sub-task') || normalized.includes('subtask');
       if (filter === 'Epic') return normalized === 'epic';
@@ -7590,7 +7621,7 @@ function JiraBoardView({
     });
   };
 
-  const toggleIssueTypeFilter = (value: '需求' | '故障' | '任务' | '子任务' | 'Epic') => {
+  const toggleIssueTypeFilter = (value: JiraIssueTypeFilter) => {
     setIssueTypeFilters(prev => (
       prev.includes(value)
         ? prev.filter(item => item !== value)
@@ -7805,6 +7836,7 @@ function JiraBoardView({
               {[
                 { key: '需求', label: '需求' },
                 { key: '故障', label: '故障' },
+                { key: '问题', label: '问题' },
                 { key: '任务', label: '任务' },
                 { key: '子任务', label: '子任务' },
                 { key: 'Epic', label: 'Epic' },
@@ -7812,13 +7844,13 @@ function JiraBoardView({
                 <button
                   key={option.key}
                   onClick={() => {
-                    toggleIssueTypeFilter(option.key as '需求' | '故障' | '任务' | '子任务' | 'Epic');
+                    toggleIssueTypeFilter(option.key as JiraIssueTypeFilter);
                     setShowPendingOnly(false);
                   }}
                   className="text-xs px-3 py-1 transition-colors"
                   style={{
-                    backgroundColor: issueTypeFilters.includes(option.key as '需求' | '故障' | '任务' | '子任务' | 'Epic') ? '#7C3AED' : '#FFFFFF',
-                    color: issueTypeFilters.includes(option.key as '需求' | '故障' | '任务' | '子任务' | 'Epic') ? '#FFFFFF' : '#374151',
+                    backgroundColor: issueTypeFilters.includes(option.key as JiraIssueTypeFilter) ? '#7C3AED' : '#FFFFFF',
+                    color: issueTypeFilters.includes(option.key as JiraIssueTypeFilter) ? '#FFFFFF' : '#374151',
                   }}
                 >
                   {option.label}

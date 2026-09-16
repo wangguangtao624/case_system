@@ -130,7 +130,13 @@ export async function GET(_request: NextRequest) {
     }
 
     const db = getDb();
-    const users = db.prepare('SELECT id, username FROM users ORDER BY id').all() as Array<{ id: number; username: string }>;
+    const users = db.prepare(`
+      SELECT id, username
+      FROM users
+      WHERE COALESCE(is_frozen, 0) = 0
+        AND LOWER(TRIM(username)) <> 'visitor'
+      ORDER BY id
+    `).all() as Array<{ id: number; username: string }>;
 
     const userSummaries = await Promise.all(users.map(async user => {
       const issues = await searchIssuesForUser(user.username);

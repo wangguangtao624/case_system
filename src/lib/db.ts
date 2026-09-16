@@ -30,6 +30,8 @@ function initializeDatabase(db: Database.Database) {
       username TEXT UNIQUE NOT NULL,
       password TEXT NOT NULL,
       role TEXT DEFAULT 'user',
+      is_frozen INTEGER DEFAULT 0,
+      frozen_at TEXT DEFAULT NULL,
       created_at TEXT DEFAULT (datetime('now', 'localtime'))
     );
 
@@ -120,6 +122,15 @@ function initializeDatabase(db: Database.Database) {
   // Migration: add test_log column if not exists
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN test_log TEXT DEFAULT ''`);
+  } catch { /* column already exists */ }
+
+  // Migration: allow departed users to be disabled without deleting historical data
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN is_frozen INTEGER DEFAULT 0`);
+  } catch { /* column already exists */ }
+
+  try {
+    db.exec(`ALTER TABLE users ADD COLUMN frozen_at TEXT DEFAULT NULL`);
   } catch { /* column already exists */ }
 
   // Migration: add source column to files table

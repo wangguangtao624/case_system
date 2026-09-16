@@ -104,7 +104,7 @@ export default function LoginPage() {
         </div>
 
         <p className="text-center mt-4 text-xs" style={{ color: '#999' }}>
-          测试用例管理平台 v1.0
+          测试用例管理平台 v2.6.1
         </p>
       </div>
     </div>

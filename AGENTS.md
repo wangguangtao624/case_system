@@ -57,7 +57,7 @@
 SQLite 数据库，位于 `data/platform.db`，自动初始化。
 
 ### 表结构
-- **users**: 用户表 (id, username, password, role, created_at)
+- **users**: 用户表 (id, username, password, role, is_frozen, frozen_at, created_at)
 - **projects**: 项目/二级节点 (id, user_id, name, sort_order)
 - **modules**: 模块/三级节点 (id, project_id, name, sort_order)
 - **cases**: 用例/四级节点 (id, module_id, case_name, case_no, test_category, feature, trait, priority, test_env, test_device, pre_operation, step, expect_result, note, test_result, jira_link, test_log, fail_note, executor, test_result_note, light, temperature)
@@ -74,6 +74,7 @@ SQLite 数据库，位于 `data/platform.db`，自动初始化。
 - 登录/登出 (JWT httpOnly Cookie)
 - 修改密码 (验证原密码, 新密码>=6位)
 - admin: 新增用户、删除用户、重置密码
+- 支持冻结/解冻用户；冻结立即阻止登录并使已有登录态失效，但保留全部历史数据、分配关系和测试记录
 
 ### 4级树状目录
 - 一级: 当前用户名 (不可操作)

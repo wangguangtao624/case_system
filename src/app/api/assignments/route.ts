@@ -80,8 +80,13 @@ export async function POST(request: NextRequest) {
     if (!target) return NextResponse.json({ error: '目标不存在' }, { status: 404 });
 
     // Verify user exists
-    const assignUser = db.prepare('SELECT id, username FROM users WHERE id = ?').get(Number(userId)) as { id: number; username: string } | undefined;
+    const assignUser = db.prepare(`
+      SELECT id, username, COALESCE(is_frozen, 0) AS is_frozen
+      FROM users
+      WHERE id = ?
+    `).get(Number(userId)) as { id: number; username: string; is_frozen: number } | undefined;
     if (!assignUser) return NextResponse.json({ error: '用户不存在' }, { status: 404 });
+    if (assignUser.is_frozen === 1) return NextResponse.json({ error: '被冻结用户不能接受新的测试任务' }, { status: 400 });
 
     const numUserId = Number(userId);
     const numTargetId = Number(targetId);
