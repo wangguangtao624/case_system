@@ -93,6 +93,7 @@ interface TreeNode {
 
 interface CaseData {
   id: number;
+  revision: number;
   case_name: string;
   case_no: string;
   test_category: string;
@@ -118,8 +119,12 @@ interface CaseData {
   module_id: number;
   project_name: string;
   project_id: number;
+  created_at?: string;
+  updated_at?: string;
   is_archived?: number;
 }
+
+type AutoSaveStatus = 'idle' | 'pending' | 'saving' | 'saved' | 'error' | 'conflict';
 
 interface FileData {
   id: number;
@@ -1148,6 +1153,7 @@ export default function DashboardPage() {
             />
           ) : selectedCase ? (
             <CaseDetail
+              key={selectedCase.id}
               caseData={selectedCase}
               files={selectedFiles}
               permissions={casePermissions}
@@ -2579,6 +2585,7 @@ function CaseDetail({
   const nullToEmpty = (v: string | null | undefined) => v ?? '';
   const [form, setForm] = useState({
     ...caseData,
+    revision: caseData.revision ?? 0,
     test_device: nullToEmpty(caseData.test_device),
     light: nullToEmpty(caseData.light),
     temperature: nullToEmpty(caseData.temperature),
@@ -2601,6 +2608,7 @@ function CaseDetail({
     priority: nullToEmpty(caseData.priority),
   });
   const [saving, setSaving] = useState(false);
+  const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>('idle');
   const [message, setMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<UploadProgressState>({ active: false, percent: 0, label: '' });
@@ -2612,14 +2620,27 @@ function CaseDetail({
   const [editingMode, setEditingMode] = useState(false); // Manager edit mode toggle
   const [showTesterAssign, setShowTesterAssign] = useState(false); // Tester assign dropdown
   const [showDeviceOptions, setShowDeviceOptions] = useState(false);
+  const [deviceOptionQuery, setDeviceOptionQuery] = useState('');
   const [applyingDevice, setApplyingDevice] = useState(false);
   const testerAssignRef = useRef<HTMLDivElement>(null);
   const deviceSelectRef = useRef<HTMLDivElement>(null);
+  const formRef = useRef(form);
+  const revisionRef = useRef(caseData.revision ?? 0);
+  const dirtyFieldsRef = useRef<Set<string>>(new Set());
+  const saveTimerRef = useRef<number | null>(null);
+  const saveInFlightRef = useRef(false);
+  const saveConflictRef = useRef(false);
+  const onUpdateRef = useRef(onUpdate);
+  const mountedRef = useRef(true);
+
+  formRef.current = form;
+  onUpdateRef.current = onUpdate;
 
   useEffect(() => {
     // Normalize null values to empty strings to avoid React "value prop should not be null" warning
     setForm({
       ...caseData,
+      revision: caseData.revision ?? 0,
       test_result: caseData.test_result ?? '',
       test_device: caseData.test_device ?? '',
       light: caseData.light ?? '',
@@ -2646,7 +2667,12 @@ function CaseDetail({
     setEditingJira(false);
     setJiraLinkError(false);
     setShowDeviceOptions(false);
-  }, [caseData]);
+    setDeviceOptionQuery('');
+    revisionRef.current = caseData.revision ?? 0;
+    dirtyFieldsRef.current.clear();
+    saveConflictRef.current = false;
+    setAutoSaveStatus('idle');
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- keyed remount on navigation; preserve same-Case local edits
 
   // Close tester assign dropdown on outside click
   useEffect(() => {
@@ -2756,10 +2782,121 @@ function CaseDetail({
     }
   };
 
+  const flushAutoSave = useCallback(async (keepalive = false): Promise<boolean> => {
+    if (saveTimerRef.current !== null) {
+      window.clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    if (saveConflictRef.current || saveInFlightRef.current || dirtyFieldsRef.current.size === 0) return false;
+
+    const fields = Array.from(dirtyFieldsRef.current);
+    const snapshot = formRef.current;
+    if (fields.includes('jira_link')) {
+      const jiraLinks = parseJiraLinks(snapshot.jira_link);
+      if (jiraLinks.some(link => !isHttpJiraLink(link))) {
+        setJiraLinkError(true);
+        setAutoSaveStatus('error');
+        setMessage({ type: 'error', text: 'Jira链接格式不正确，自动保存已等待修正' });
+        return false;
+      }
+    }
+
+    const changes: Record<string, string> = {};
+    for (const field of fields) {
+      const value = (snapshot as unknown as Record<string, unknown>)[field];
+      changes[field] = typeof value === 'string' ? value : '';
+      dirtyFieldsRef.current.delete(field);
+    }
+
+    saveInFlightRef.current = true;
+    setSaving(true);
+    setAutoSaveStatus('saving');
+    try {
+      const response = await fetch('/api/cases', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: snapshot.id,
+          saveType: 'autosave',
+          expectedRevision: revisionRef.current,
+          changes,
+        }),
+        keepalive,
+      });
+      const data = await response.json();
+      if (response.status === 409 && data.conflict) {
+        fields.forEach(field => dirtyFieldsRef.current.add(field));
+        saveConflictRef.current = true;
+        setAutoSaveStatus('conflict');
+        setMessage({ type: 'error', text: '检测到其他位置已更新此 Case。为避免覆盖，自动保存已暂停。' });
+        return false;
+      }
+      if (!response.ok || !data.success) {
+        fields.forEach(field => dirtyFieldsRef.current.add(field));
+        throw new Error(data.error || '自动保存失败');
+      }
+
+      const revision = typeof data.revision === 'number' ? data.revision : revisionRef.current + 1;
+      revisionRef.current = revision;
+      const deviceOptions = Array.isArray(data.deviceOptions)
+        ? data.deviceOptions.filter((device: unknown): device is string => typeof device === 'string')
+        : snapshot.device_options;
+      if (!keepalive && mountedRef.current) setForm(prev => {
+        const next = {
+          ...prev,
+          revision,
+          updated_at: data.updated_at || prev.updated_at,
+          executor: typeof data.executor === 'string' ? data.executor : prev.executor,
+          device_options: deviceOptions,
+        };
+        formRef.current = next;
+        return next;
+      });
+      if (!keepalive && mountedRef.current) {
+        onUpdateRef.current({
+          ...snapshot,
+          revision,
+          updated_at: data.updated_at || snapshot.updated_at,
+          executor: typeof data.executor === 'string' ? data.executor : snapshot.executor,
+          device_options: deviceOptions,
+        });
+        setMessage(null);
+        setAutoSaveStatus(dirtyFieldsRef.current.size > 0 ? 'pending' : 'saved');
+      }
+      return true;
+    } catch (error) {
+      fields.forEach(field => dirtyFieldsRef.current.add(field));
+      setAutoSaveStatus('error');
+      setMessage({ type: 'error', text: error instanceof Error ? error.message : '自动保存失败，请检查网络' });
+      return false;
+    } finally {
+      saveInFlightRef.current = false;
+      if (!keepalive && mountedRef.current) setSaving(false);
+      if (!keepalive && mountedRef.current && !saveConflictRef.current && dirtyFieldsRef.current.size > 0) {
+        saveTimerRef.current = window.setTimeout(() => void flushAutoSave(), 600);
+      } else if (!keepalive && !mountedRef.current && !saveConflictRef.current && dirtyFieldsRef.current.size > 0) {
+        void flushAutoSave(true);
+      }
+    }
+  }, []);
+
+  const scheduleAutoSave = useCallback((delay = 800) => {
+    if (saveConflictRef.current) return;
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
+    setAutoSaveStatus('pending');
+    saveTimerRef.current = window.setTimeout(() => void flushAutoSave(), delay);
+  }, [flushAutoSave]);
+
   const handleFieldChange = (field: string, value: string) => {
-    setForm(prev => ({ ...prev, [field]: value }));
+    setForm(prev => {
+      const next = { ...prev, [field]: value };
+      formRef.current = next;
+      return next;
+    });
+    dirtyFieldsRef.current.add(field);
     setMessage(null);
     if (field === 'jira_link') setJiraLinkError(false);
+    scheduleAutoSave();
   };
 
   const updateJiraLink = (index: number, value: string) => {
@@ -2779,78 +2916,80 @@ function CaseDetail({
     handleFieldChange('jira_link', links.join('\n'));
   };
 
-  const handleSave = async (saveType: 'core' | 'result' = 'result') => {
-    // Validate jira_link format if provided
-    const jiraLinks = parseJiraLinks(form.jira_link);
-    if (jiraLinks.some(link => !isHttpJiraLink(link))) {
-      setMessage({ type: 'error', text: 'Jira链接格式不正确，每条链接均需以http://或https://开头' });
-      setJiraLinkError(true);
-      setTimeout(() => setMessage(null), 1000);
-      return;
-    }
-
-    setSaving(true);
-    try {
-      const body: Record<string, unknown> = {
-        id: form.id,
-        saveType,
-      };
-
-      if (saveType === 'core') {
-        // Core fields - manager only
-        Object.assign(body, {
-          case_name: form.case_name,
-          priority: form.priority,
-          test_env: form.test_env,
-          pre_operation: form.pre_operation,
-          step: form.step,
-          expect_result: form.expect_result,
-          note: form.note,
-          case_no: form.case_no,
-          test_category: form.test_category,
-          feature: form.feature,
-          trait: form.trait,
-          light: form.light,
-          temperature: form.temperature,
-        });
-      } else {
-        // Result fields - manager or tester
-        Object.assign(body, {
-          test_device: form.test_device,
-          test_result: form.test_result,
-          jira_link: serializeJiraLinks(form.jira_link),
-          fail_note: form.fail_note,
-          test_log: form.test_log,
-          test_result_note: form.test_result_note,
-        });
-      }
-
-      const res = await fetch('/api/cases', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (data.success) {
-        setMessage({ type: 'success', text: saveType === 'core' ? '基础信息保存成功' : '测试结果保存成功' });
-        setEditingMode(false);
-        setEditingJira(false);
-        const deviceOptions = Array.isArray(data.deviceOptions)
-          ? data.deviceOptions.filter((device: unknown): device is string => typeof device === 'string')
-          : (form.device_options || []);
-        const updatedForm = { ...form, jira_link: serializeJiraLinks(form.jira_link), device_options: deviceOptions };
-        setForm(updatedForm);
-        onUpdate(updatedForm);
-      } else {
-        setMessage({ type: 'error', text: data.error || '保存失败' });
-      }
-    } catch {
-      setMessage({ type: 'error', text: '保存失败，请稍后重试' });
-    } finally {
-      setSaving(false);
-      setTimeout(() => setMessage(null), 1000);
-    }
+  const handleSave = async () => {
+    await flushAutoSave();
+    setEditingMode(false);
+    setEditingJira(false);
   };
+
+  const reloadLatestCase = useCallback(async (force = true) => {
+    if (!force && (dirtyFieldsRef.current.size > 0 || saveInFlightRef.current || saveConflictRef.current)) return;
+    try {
+      const response = await fetch(`/api/cases/${formRef.current.id}?_t=${Date.now()}`);
+      const data = await response.json();
+      if (!response.ok || !data.case) throw new Error(data.error || '加载失败');
+      const latest = data.case as CaseData;
+      if (!force && (latest.revision ?? 0) === revisionRef.current) return;
+      const normalized = {
+        ...latest,
+        revision: latest.revision ?? 0,
+        test_result: latest.test_result ?? '',
+        test_device: latest.test_device ?? '',
+        light: latest.light ?? '',
+        temperature: latest.temperature ?? '',
+        case_name: latest.case_name ?? '',
+        case_no: latest.case_no ?? '',
+        test_category: latest.test_category ?? '',
+        feature: latest.feature ?? '',
+        trait: latest.trait ?? '',
+        test_env: latest.test_env ?? '',
+        pre_operation: latest.pre_operation ?? '',
+        step: latest.step ?? '',
+        expect_result: latest.expect_result ?? '',
+        note: latest.note ?? '',
+        jira_link: serializeJiraLinks(latest.jira_link),
+        fail_note: latest.fail_note ?? '',
+        test_log: latest.test_log ?? '',
+        executor: latest.executor ?? '',
+        test_result_note: latest.test_result_note ?? '',
+        priority: latest.priority ?? '',
+        device_options: latest.device_options ?? [],
+      };
+      dirtyFieldsRef.current.clear();
+      saveConflictRef.current = false;
+      revisionRef.current = normalized.revision;
+      formRef.current = normalized;
+      setForm(normalized);
+      setMessage(null);
+      setAutoSaveStatus('saved');
+      onUpdateRef.current(normalized);
+    } catch (error) {
+      setMessage({ type: 'error', text: error instanceof Error ? error.message : '加载最新内容失败' });
+    }
+  }, []);
+
+  useEffect(() => {
+    const syncIfClean = () => { void reloadLatestCase(false); };
+    const syncWhenVisible = () => { if (document.visibilityState === 'visible') syncIfClean(); };
+    window.addEventListener('focus', syncIfClean);
+    document.addEventListener('visibilitychange', syncWhenVisible);
+    const interval = window.setInterval(syncIfClean, 30000);
+    return () => {
+      window.removeEventListener('focus', syncIfClean);
+      document.removeEventListener('visibilitychange', syncWhenVisible);
+      window.clearInterval(interval);
+    };
+  }, [reloadLatestCase]);
+
+  useEffect(() => {
+    const flushBeforeLeaving = () => { void flushAutoSave(true); };
+    window.addEventListener('beforeunload', flushBeforeLeaving);
+    return () => {
+      mountedRef.current = false;
+      window.removeEventListener('beforeunload', flushBeforeLeaving);
+      flushBeforeLeaving();
+    };
+  }, [flushAutoSave]);
 
   const handleApplyDeviceToProject = async () => {
     const deviceName = form.test_device.trim();
@@ -2858,6 +2997,8 @@ function CaseDetail({
       setMessage({ type: 'error', text: '请先填写或选择测试设备' });
       return;
     }
+    await flushAutoSave();
+    if (saveConflictRef.current) return;
     setApplyingDevice(true);
     setShowDeviceOptions(false);
     try {
@@ -2871,7 +3012,10 @@ function CaseDetail({
       const deviceOptions = Array.isArray(data.deviceOptions)
         ? data.deviceOptions.filter((device: unknown): device is string => typeof device === 'string')
         : (form.device_options || []);
-      const updatedForm = { ...form, test_device: deviceName, device_options: deviceOptions };
+      const revision = typeof data.revision === 'number' ? data.revision : revisionRef.current;
+      revisionRef.current = revision;
+      const updatedForm = { ...formRef.current, revision, test_device: deviceName, device_options: deviceOptions };
+      formRef.current = updatedForm;
       setForm(updatedForm);
       onUpdate(updatedForm);
       setMessage({ type: 'success', text: `已应用到 ${data.updatedCount || 0} 个未填写的 Case` });
@@ -3034,10 +3178,16 @@ function CaseDetail({
   // Whether the current user can edit result fields
   const canEditResult = permissions.canEditResult;
   const filteredDeviceOptions = (form.device_options || []).filter(device =>
-    !form.test_device.trim() || device.toLocaleLowerCase().includes(form.test_device.trim().toLocaleLowerCase())
+    !deviceOptionQuery.trim() || device.toLocaleLowerCase().includes(deviceOptionQuery.trim().toLocaleLowerCase())
   );
   const jiraLinkRows = form.jira_link.split('\n');
   const displayJiraLinks = parseJiraLinks(form.jira_link);
+  const autoSaveLabel = autoSaveStatus === 'pending' ? '待自动保存'
+    : autoSaveStatus === 'saving' ? '正在自动保存...'
+      : autoSaveStatus === 'saved' ? '已自动保存'
+        : autoSaveStatus === 'error' ? '自动保存失败'
+          : autoSaveStatus === 'conflict' ? '发现编辑冲突'
+            : '自动保存已开启';
 
   // Unified read-only style: no gray background, no disabled cursor - just clean text display
   const readOnlyInputStyle = (editable: boolean) => ({
@@ -3056,6 +3206,9 @@ function CaseDetail({
   return (
     <div
       className="p-5 relative"
+      onBlurCapture={() => {
+        if (dirtyFieldsRef.current.size > 0 && !saveConflictRef.current) scheduleAutoSave(120);
+      }}
       onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); caseDragCounterRef.current++; if (e.dataTransfer.types.includes('Files')) setCaseDragOver(true); }}
       onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); caseDragCounterRef.current--; if (caseDragCounterRef.current === 0) setCaseDragOver(false); }}
       onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -3143,6 +3296,32 @@ function CaseDetail({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {(permissions.canEditCore || permissions.canEditResult) && (
+              <div className="flex items-center gap-1.5">
+                <span
+                  className="inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px]"
+                  style={{
+                    color: autoSaveStatus === 'conflict' || autoSaveStatus === 'error' ? '#B91C1C' : autoSaveStatus === 'saved' ? '#047857' : '#64748B',
+                    backgroundColor: autoSaveStatus === 'conflict' || autoSaveStatus === 'error' ? '#FEF2F2' : autoSaveStatus === 'saved' ? '#ECFDF5' : '#F8FAFC',
+                    border: `1px solid ${autoSaveStatus === 'conflict' || autoSaveStatus === 'error' ? '#FECACA' : autoSaveStatus === 'saved' ? '#A7F3D0' : '#E2E8F0'}`,
+                  }}
+                  title="编辑停止约 0.8 秒后自动保存；离开输入框时会立即保存"
+                >
+                  <span className={autoSaveStatus === 'saving' ? 'animate-pulse' : ''}>●</span>
+                  {autoSaveLabel}
+                </span>
+                {autoSaveStatus === 'conflict' && (
+                  <button
+                    type="button"
+                    onClick={() => void reloadLatestCase(true)}
+                    className="rounded border px-2 py-1 text-[11px] hover:bg-red-50"
+                    style={{ color: '#B91C1C', borderColor: '#FCA5A5' }}
+                  >
+                    加载服务器最新版
+                  </button>
+                )}
+              </div>
+            )}
             {permissions.canEditResult && (
               <button
                 type="button"
@@ -3159,9 +3338,9 @@ function CaseDetail({
                 onClick={() => {
                   if (editingMode) {
                     if (canEditCore) {
-                      handleSave('core');
+                      handleSave();
                     } else {
-                      handleSave('result');
+                      handleSave();
                     }
                   } else {
                     setEditingMode(true);
@@ -3176,7 +3355,7 @@ function CaseDetail({
                 onMouseOver={(e) => { if (!editingMode) e.currentTarget.style.backgroundColor = '#E0EFFF'; else e.currentTarget.style.backgroundColor = '#FEE2E2'; }}
                 onMouseOut={(e) => { if (!editingMode) e.currentTarget.style.backgroundColor = '#F0F7FF'; else e.currentTarget.style.backgroundColor = '#FEF2F2'; }}
               >
-                {editingMode ? '保存修改' : '用例修改'}
+                {editingMode ? '完成编辑' : '用例修改'}
               </button>
             )}
             {tester && (
@@ -3404,19 +3583,23 @@ function CaseDetail({
                 <div className="flex items-center gap-2">
                   <div ref={deviceSelectRef} className="relative min-w-0 flex-1">
                     <input type="text" value={form.test_device || ''}
-                      onChange={(e) => { handleFieldChange('test_device', e.target.value); setShowDeviceOptions(true); }}
+                      onChange={(e) => {
+                        handleFieldChange('test_device', e.target.value);
+                        setDeviceOptionQuery(e.target.value);
+                        setShowDeviceOptions(true);
+                      }}
                       readOnly={!canEditResult}
-                      maxLength={100}
+                      maxLength={500}
                       className="w-full px-2 py-1 pr-8 border rounded text-xs focus:outline-none focus:ring-1"
                       style={readOnlyInputStyle(canEditResult)}
-                      onFocus={(e) => { if (canEditResult) { setShowDeviceOptions(true); e.target.style.borderColor = '#0073E6'; e.target.style.boxShadow = '0 0 0 2px rgba(0,115,230,0.1)'; } }}
+                      onFocus={(e) => { if (canEditResult) { setDeviceOptionQuery(''); setShowDeviceOptions(true); e.target.style.borderColor = '#0073E6'; e.target.style.boxShadow = '0 0 0 2px rgba(0,115,230,0.1)'; } }}
                       onBlur={(e) => { e.target.style.borderColor = 'transparent'; e.target.style.boxShadow = 'none'; }}
                       placeholder="测试设备型号、配置等"
                     />
                     {canEditResult && (
                       <button
                         type="button"
-                        onClick={() => setShowDeviceOptions(open => !open)}
+                        onClick={() => { setDeviceOptionQuery(''); setShowDeviceOptions(open => !open); }}
                         className="absolute inset-y-0 right-0 flex w-8 items-center justify-center rounded-r text-gray-400 hover:text-blue-600"
                         aria-label="选择测试设备"
                       >
@@ -3433,7 +3616,7 @@ function CaseDetail({
                               style={{ color: '#374151' }}
                               title={device}
                               onMouseDown={(event) => event.preventDefault()}
-                              onClick={() => { handleFieldChange('test_device', device); setShowDeviceOptions(false); }}
+                              onClick={() => { handleFieldChange('test_device', device); setDeviceOptionQuery(''); setShowDeviceOptions(false); }}
                             >
                               {device}
                             </button>
@@ -3605,6 +3788,7 @@ function CaseDetail({
           caseId={form.id}
           preOperation={form.pre_operation || ''}
           step={form.step || ''}
+          editable={canEditResult}
         />
 
         {/* File List */}
@@ -3669,22 +3853,6 @@ function CaseDetail({
               </div>
             ))}
           </div>
-        )}
-      </div>
-
-      {/* Save Buttons */}
-      <div className="flex justify-end gap-2">
-        {canEditResult && !editingMode && (
-          <button
-            onClick={() => handleSave('result')}
-            disabled={saving}
-            className="px-6 py-2 text-white rounded-md text-sm font-medium transition-all disabled:opacity-60"
-            style={{ backgroundColor: '#0073E6', boxShadow: saving ? 'none' : '0 1px 2px rgba(0,115,230,0.2)' }}
-            onMouseOver={(e) => { if (!saving) e.currentTarget.style.backgroundColor = '#0062CC'; }}
-            onMouseOut={(e) => { if (!saving) e.currentTarget.style.backgroundColor = '#0073E6'; }}
-          >
-            {saving ? '保存中...' : '结果保存'}
-          </button>
         )}
       </div>
 
@@ -5105,18 +5273,117 @@ function SyncedTextareaRow({
 }
 
 // ============ Rich Text Editor ============
+const CASE_LOG_EDITOR_PLACEHOLDER = '在此记录测试执行详情、问题描述、结果说明等。支持 Ctrl+V 粘贴截图，双击图片可放大查看，拖动图片边缘可调整大小...';
+
+const CASE_LOG_ALLOWED_STYLES = new Set([
+  'color', 'background-color', 'font-weight', 'font-style', 'text-decoration',
+  'text-align', 'width', 'height', 'max-width', 'margin', 'margin-top',
+  'margin-right', 'margin-bottom', 'margin-left', 'display', 'vertical-align',
+]);
+
+function isSafeCaseLogUrl(value: string, image = false) {
+  const normalized = value.trim().toLocaleLowerCase();
+  return normalized.startsWith('/')
+    || normalized.startsWith('http://')
+    || normalized.startsWith('https://')
+    || normalized.startsWith('blob:')
+    || (image && normalized.startsWith('data:image/'));
+}
+
+function findCopiedCaseLogEditorHtml(html: string) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const copiedEditor = template.content.querySelector<HTMLElement>(
+    '[data-case-log-editor="true"], [data-placeholder^="在此记录测试执行详情"], .fixed.inset-0 [contenteditable]'
+  );
+  return copiedEditor?.innerHTML ?? null;
+}
+
+function repairStoredCaseLogHtml(html: string) {
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  const copiedEditor = template.content.querySelector<HTMLElement>(
+    '[data-case-log-editor="true"], [data-placeholder^="在此记录测试执行详情"], .fixed.inset-0 [contenteditable]'
+  );
+  if (!copiedEditor) return null;
+
+  const editorContent = document.createDocumentFragment();
+  for (const child of Array.from(copiedEditor.childNodes)) editorContent.appendChild(child.cloneNode(true));
+  const copiedShell = copiedEditor.closest('.fixed.inset-0') || copiedEditor;
+  copiedShell.replaceWith(editorContent);
+
+  // React Inspector attributes give us an exact boundary for the other copied
+  // Case UI (file list, icons and controls) in affected development builds.
+  template.content.querySelectorAll('[data-inspector-relative-path], .mt-3.space-y-1').forEach(node => node.remove());
+  return sanitizeCaseLogHtml(template.innerHTML);
+}
+
+function sanitizeCaseLogHtml(html: string, recoverCopiedEditor = false) {
+  const template = document.createElement('template');
+  const copiedEditorHtml = recoverCopiedEditor ? findCopiedCaseLogEditorHtml(html) : null;
+  template.innerHTML = copiedEditorHtml ?? html;
+
+  template.content.querySelectorAll('script, style, iframe, object, embed, form, input, button, svg, meta, link').forEach(node => node.remove());
+  template.content.querySelectorAll<HTMLElement>('*').forEach(element => {
+    const tagName = element.tagName;
+    for (const attribute of Array.from(element.attributes)) {
+      const name = attribute.name.toLocaleLowerCase();
+      const keepLinkAttribute = tagName === 'A' && ['href', 'title', 'target', 'rel'].includes(name);
+      const keepImageAttribute = tagName === 'IMG' && ['src', 'alt', 'title', 'width', 'height'].includes(name);
+      const keepTableAttribute = ['TD', 'TH'].includes(tagName) && ['colspan', 'rowspan'].includes(name);
+      const keepFontAttribute = tagName === 'FONT' && name === 'color' && /^#[0-9a-f]{3,8}$/i.test(attribute.value);
+      if (name !== 'style' && !keepLinkAttribute && !keepImageAttribute && !keepTableAttribute && !keepFontAttribute) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+
+    if (element.hasAttribute('style')) {
+      const originalStyle = element.getAttribute('style') || '';
+      element.removeAttribute('style');
+      const parsedStyle = document.createElement('span');
+      parsedStyle.setAttribute('style', originalStyle);
+      for (const property of Array.from(parsedStyle.style)) {
+        if (!CASE_LOG_ALLOWED_STYLES.has(property)) continue;
+        const value = parsedStyle.style.getPropertyValue(property);
+        if (/url\s*\(|expression\s*\(/i.test(value)) continue;
+        if (property === 'display' && !['inline', 'inline-block', 'block'].includes(value.trim())) continue;
+        element.style.setProperty(property, value, parsedStyle.style.getPropertyPriority(property));
+      }
+      if (!element.getAttribute('style')) element.removeAttribute('style');
+    }
+
+    if (tagName === 'A') {
+      const href = element.getAttribute('href');
+      if (href && !isSafeCaseLogUrl(href)) element.removeAttribute('href');
+      if (element.getAttribute('target') === '_blank') element.setAttribute('rel', 'noopener noreferrer');
+    }
+    if (tagName === 'IMG') {
+      const src = element.getAttribute('src');
+      if (!src || !isSafeCaseLogUrl(src, true)) {
+        element.remove();
+      } else {
+        element.className = 'editor-img';
+      }
+    }
+  });
+
+  return template.innerHTML;
+}
+
 function RichTextEditor({
   value,
   onChange,
   caseId,
   preOperation,
   step,
+  editable,
 }: {
   value: string;
   onChange: (html: string) => void;
   caseId: number;
   preOperation: string;
   step: string;
+  editable: boolean;
 }) {
   const editorRef = useRef<HTMLDivElement>(null);
   const [colorPickerOpen, setColorPickerOpen] = useState(false);
@@ -5129,19 +5396,40 @@ function RichTextEditor({
   const [isDraggingImage, setIsDraggingImage] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [resizingImg, setResizingImg] = useState<HTMLElement | null>(null);
+  const onChangeRef = useRef(onChange);
+  const repairedValueRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
 
   // Sync external value to editor
   useEffect(() => {
-    if (editorRef.current && editorRef.current.innerHTML !== value) {
+    if (editorRef.current) {
+      const repairedStoredValue = repairStoredCaseLogHtml(value);
+      const repairedValue = repairedStoredValue ?? value;
       // Fix legacy image URLs: replace /api/files/ID with /api/files/preview/ID
       // Handles both relative (/api/files/ID) and absolute (https://domain/api/files/ID) URLs
-      const fixedValue = value.replace(
+      const fixedValue = repairedValue.replace(
         /(<img[^>]*src=["'])(?:https?:\/\/[^\/"']+)?(\/api\/files\/)(\d+)(["'][^>]*>)/g,
         '$1/api/files/preview/$3$4'
       );
-      editorRef.current.innerHTML = fixedValue;
+      if (editorRef.current.innerHTML !== fixedValue) editorRef.current.innerHTML = fixedValue;
+
+      // Older polluted records can contain a copied full-screen editor shell.
+      // Repair the active Case through the normal autosave path once it is editable.
+      if (editable && repairedStoredValue !== null && repairedValueRef.current !== value) {
+        repairedValueRef.current = value;
+        onChangeRef.current(fixedValue);
+      }
     }
-  }, [value]);
+  }, [editable, value]);
+
+  useEffect(() => {
+    setIsFullscreen(false);
+    setColorPickerOpen(false);
+    setImageViewing(null);
+  }, [caseId]);
 
   const execCommand = (command: string, val?: string) => {
     editorRef.current?.focus();
@@ -5236,6 +5524,14 @@ function RichTextEditor({
         }
         return;
       }
+    }
+
+    const clipboardHtml = e.clipboardData.getData('text/html');
+    if (clipboardHtml) {
+      e.preventDefault();
+      const safeHtml = sanitizeCaseLogHtml(clipboardHtml, true);
+      document.execCommand('insertHTML', false, safeHtml);
+      onChange(editorRef.current?.innerHTML || '');
     }
   };
 
@@ -5405,6 +5701,39 @@ function RichTextEditor({
     { label: '紫色', value: '#8B5CF6' },
   ];
 
+  useEffect(() => {
+    if (!isFullscreen) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const exitFullscreen = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsFullscreen(false);
+    };
+    window.addEventListener('keydown', exitFullscreen);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener('keydown', exitFullscreen);
+    };
+  }, [isFullscreen]);
+
+  const fullscreenButton = (
+    <button
+      type="button"
+      className="px-2 py-1 rounded text-sm hover:bg-gray-200 transition-colors flex items-center gap-1"
+      style={{ color: '#333' }}
+      onClick={() => setIsFullscreen(!isFullscreen)}
+      title={isFullscreen ? '退出全屏 (Esc)' : editable ? '全屏编辑' : '全屏查看'}
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        {isFullscreen ? (
+          <><polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" /><line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" /></>
+        ) : (
+          <><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" /></>
+        )}
+      </svg>
+      {isFullscreen ? '退出全屏' : editable ? '全屏' : '全屏查看'}
+    </button>
+  );
+
   const toolbar = (
     <div className="flex items-center gap-0.5 px-2 py-1.5 border-b flex-wrap" style={{ borderColor: '#EEEEEE', backgroundColor: '#FAFAFA' }}>
       <button type="button" className="px-2 py-1 rounded text-sm font-bold hover:bg-gray-200 transition-colors" style={{ color: '#333' }} onClick={() => execCommand('bold')} title="加粗 (Ctrl+B)">B</button>
@@ -5437,16 +5766,7 @@ function RichTextEditor({
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
         导入步骤
       </button>
-      <button type="button" className="px-2 py-1 rounded text-sm hover:bg-gray-200 transition-colors flex items-center gap-1" style={{ color: '#333' }} onClick={() => setIsFullscreen(!isFullscreen)} title={isFullscreen ? '退出全屏 (Esc)' : '全屏编辑'}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          {isFullscreen ? (
-            <><polyline points="4 14 10 14 10 20" /><polyline points="20 10 14 10 14 4" /><line x1="14" y1="10" x2="21" y2="3" /><line x1="3" y1="21" x2="10" y2="14" /></>
-          ) : (
-            <><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" /></>
-          )}
-        </svg>
-        {isFullscreen ? '退出全屏' : '全屏'}
-      </button>
+      {fullscreenButton}
       {uploadProgress.active && (
         <div className="flex items-center gap-2 ml-2">
           <div className="w-24 h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -5464,10 +5784,15 @@ function RichTextEditor({
         className={isFullscreen ? 'fixed inset-0 z-50 flex flex-col' : 'border rounded-md overflow-hidden'}
         style={isFullscreen ? { backgroundColor: '#FFFFFF', borderColor: undefined } : { borderColor: '#EEEEEE' }}
       >
-        {toolbar}
+        {editable ? toolbar : (
+          <div className="flex items-center justify-end px-2 py-1.5 border-b" style={{ borderColor: '#EEEEEE', backgroundColor: '#FAFAFA' }}>
+            {fullscreenButton}
+          </div>
+        )}
         <div
           ref={editorRef}
-          contentEditable
+          contentEditable={editable}
+          data-case-log-editor="true"
           className="px-3 py-2 text-sm focus:outline-none"
           style={{ color: '#333', lineHeight: '1.8', minHeight: isFullscreen ? 'calc(100vh - 60px)' : '150px', maxHeight: isFullscreen ? 'calc(100vh - 60px)' : '500px', overflowY: 'auto' }}
           onInput={handleInput}
@@ -5477,7 +5802,7 @@ function RichTextEditor({
           onDoubleClick={handleEditorDoubleClick}
           onMouseDown={handleEditorMouseDown}
           onMouseMove={handleEditorMouseMove}
-          data-placeholder="在此记录测试执行详情、问题描述、结果说明等。支持 Ctrl+V 粘贴截图，双击图片可放大查看，拖动图片边缘可调整大小..."
+          data-placeholder={CASE_LOG_EDITOR_PLACEHOLDER}
         />
       </div>
 

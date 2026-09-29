@@ -163,6 +163,12 @@ function initializeDatabase(db: Database.Database) {
     db.exec(`ALTER TABLE cases ADD COLUMN test_device TEXT DEFAULT ''`);
   } catch { /* column already exists */ }
 
+  // Monotonic revision used by autosave to prevent stale browser tabs from
+  // silently overwriting a newer edit.
+  try {
+    db.exec(`ALTER TABLE cases ADD COLUMN revision INTEGER NOT NULL DEFAULT 0`);
+  } catch { /* column already exists */ }
+
   // Migration: add executor column to cases table
   try {
     db.exec(`ALTER TABLE cases ADD COLUMN executor TEXT DEFAULT ''`);

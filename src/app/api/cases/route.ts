@@ -7,6 +7,17 @@ function isManager(username: string): boolean {
   return isManagerUser(username);
 }
 
+const TEST_DEVICE_MAX_LENGTH = 500;
+const CORE_EDITABLE_FIELDS = [
+  'case_name', 'priority', 'test_env', 'pre_operation', 'step', 'expect_result',
+  'note', 'case_no', 'test_category', 'feature', 'trait', 'light', 'temperature',
+] as const;
+const RESULT_EDITABLE_FIELDS = [
+  'test_device', 'test_result', 'jira_link', 'fail_note', 'test_log', 'test_result_note',
+] as const;
+const CORE_EDITABLE_FIELD_SET = new Set<string>(CORE_EDITABLE_FIELDS);
+const RESULT_EDITABLE_FIELD_SET = new Set<string>(RESULT_EDITABLE_FIELDS);
+
 // Helper: check if module exists
 function moduleExists(db: ReturnType<typeof import('@/lib/db').getDb>, moduleId: number): boolean {
   const row = db.prepare('SELECT id FROM modules WHERE id = ?').get(moduleId);
@@ -134,11 +145,11 @@ export async function PUT(request: NextRequest) {
 
     const db = getDb();
     const caseRow = db.prepare(`
-      SELECT c.module_id, m.project_id
+      SELECT c.module_id, c.revision, m.project_id
       FROM cases c
       JOIN modules m ON m.id = c.module_id
       WHERE c.id = ?
-    `).get(id) as { module_id: number; project_id: number } | undefined;
+    `).get(id) as { module_id: number; project_id: number; revision: number } | undefined;
     if (!caseRow) return NextResponse.json({ error: '用例不存在' }, { status: 404 });
 
     if (!moduleExists(db, caseRow.module_id)) {
@@ -146,6 +157,12 @@ export async function PUT(request: NextRequest) {
     }
 
     const manager = isManager(user.username);
+
+    if (data.saveType !== 'core' && data.saveType !== 'rename'
+      && typeof data.test_device === 'string'
+      && data.test_device.length > TEST_DEVICE_MAX_LENGTH) {
+      return NextResponse.json({ error: `测试设备不能超过${TEST_DEVICE_MAX_LENGTH}个字符` }, { status: 400 });
+    }
 
     const normalizeSubmittedJiraLinks = (value: unknown) => {
       const links = parseJiraLinks(value);
@@ -165,6 +182,95 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '未发布项目暂不可见' }, { status: 403 });
     }
 
+    if (saveType === 'autosave') {
+      const submittedChanges = data.changes && typeof data.changes === 'object' && !Array.isArray(data.changes)
+        ? data.changes as Record<string, unknown>
+        : null;
+      const expectedRevision = Number(data.expectedRevision);
+      if (!submittedChanges || !Number.isInteger(expectedRevision) || expectedRevision < 0) {
+        return NextResponse.json({ error: '自动保存参数错误，请刷新页面后重试' }, { status: 400 });
+      }
+
+      const changeEntries = Object.entries(submittedChanges).filter(([field]) =>
+        CORE_EDITABLE_FIELD_SET.has(field) || RESULT_EDITABLE_FIELD_SET.has(field)
+      );
+      if (changeEntries.length !== Object.keys(submittedChanges).length) {
+        return NextResponse.json({ error: '包含不允许修改的字段' }, { status: 400 });
+      }
+      if (changeEntries.some(([field]) => CORE_EDITABLE_FIELD_SET.has(field)) && !manager) {
+        return NextResponse.json({ error: '无用例修改权限' }, { status: 403 });
+      }
+      if (changeEntries.some(([field]) => RESULT_EDITABLE_FIELD_SET.has(field)) && !manager) {
+        if (isArchived) {
+          return NextResponse.json({ error: '归档项目不允许修改测试结果' }, { status: 403 });
+        }
+        const tester = resolveCaseTester(db, id);
+        if (!tester || tester.userId !== user.id) {
+          return NextResponse.json({ error: '无编辑权限，该用例未分配给你' }, { status: 403 });
+        }
+      }
+      if (changeEntries.length === 0) {
+        return NextResponse.json({ success: true, revision: caseRow.revision, deviceOptions: getProjectDeviceOptions(db, caseRow.project_id) });
+      }
+
+      const normalizedEntries: Array<readonly [string, string]> = [];
+      for (const [field, rawValue] of changeEntries) {
+        const value = typeof rawValue === 'string' ? rawValue : '';
+        if (field === 'test_device' && value.length > TEST_DEVICE_MAX_LENGTH) {
+          return NextResponse.json({ error: `测试设备不能超过${TEST_DEVICE_MAX_LENGTH}个字符` }, { status: 400 });
+        }
+        if (field === 'jira_link') {
+          const normalized = normalizeSubmittedJiraLinks(value);
+          if (normalized === null) {
+            return NextResponse.json({ error: 'Jira链接格式不正确，需以http://或https://开头' }, { status: 400 });
+          }
+          normalizedEntries.push([field, normalized]);
+        } else {
+          normalizedEntries.push([field, value]);
+        }
+      }
+      const updatesResultFields = normalizedEntries.some(([field]) => RESULT_EDITABLE_FIELD_SET.has(field));
+      const setClauses = normalizedEntries.map(([field]) => `${field} = ?`);
+      const values = normalizedEntries.map(([, value]) => value);
+      if (updatesResultFields) {
+        setClauses.push('executor = ?');
+        values.push(user.username);
+      }
+      setClauses.push("revision = revision + 1", "updated_at = datetime('now', 'localtime')");
+
+      const updateResult = db.prepare(`
+        UPDATE cases SET ${setClauses.join(', ')}
+        WHERE id = ? AND revision = ?
+      `).run(...values, id, expectedRevision);
+      if (updateResult.changes === 0) {
+        const latest = db.prepare('SELECT revision, updated_at, executor FROM cases WHERE id = ?').get(id) as { revision: number; updated_at: string; executor: string } | undefined;
+        return NextResponse.json({
+          error: '该 Case 已在其他页面被修改，为避免覆盖已暂停自动保存',
+          conflict: true,
+          latest,
+        }, { status: 409 });
+      }
+      const saved = db.prepare('SELECT revision, updated_at, executor FROM cases WHERE id = ?').get(id) as { revision: number; updated_at: string; executor: string };
+      return NextResponse.json({
+        success: true,
+        ...saved,
+        deviceOptions: getProjectDeviceOptions(db, caseRow.project_id),
+      });
+    }
+
+    // Tabs opened before autosave was deployed submit whole sections without a
+    // revision and could overwrite newer work. Force those stale clients to
+    // refresh; rename remains a separate manager-only tree operation.
+    if (saveType !== 'rename') {
+      return NextResponse.json({
+        error: '页面版本已更新，请刷新后继续编辑，当前内容未覆盖服务器数据',
+        refreshRequired: true,
+      }, { status: 409 });
+    }
+    if (!manager) {
+      return NextResponse.json({ error: '无用例重命名权限' }, { status: 403 });
+    }
+
     if (manager) {
       // Manager: can edit all fields
       const { case_name, priority, test_env, test_device, pre_operation, step, expect_result, note, test_result, jira_link, fail_note, test_log, case_no, test_category, feature, trait, test_result_note, light, temperature } = data;
@@ -175,7 +281,7 @@ export async function PUT(request: NextRequest) {
             case_name = ?, priority = ?, test_env = ?, pre_operation = ?,
             step = ?, expect_result = ?, note = ?,
             case_no = ?, test_category = ?, feature = ?, trait = ?,
-            light = ?, temperature = ?,
+            light = ?, temperature = ?, revision = revision + 1,
             updated_at = datetime('now', 'localtime')
           WHERE id = ?
         `).run(case_name, priority, test_env || '', pre_operation, step, expect_result, note, case_no || '', test_category || '', feature || '', trait || '', light || '', temperature || '', id);
@@ -185,14 +291,14 @@ export async function PUT(request: NextRequest) {
         if (caseNoValue !== undefined) {
           db.prepare(`
             UPDATE cases SET 
-              case_name = ?, case_no = ?,
+              case_name = ?, case_no = ?, revision = revision + 1,
               updated_at = datetime('now', 'localtime')
             WHERE id = ?
           `).run(case_name, caseNoValue || '', id);
         } else {
           db.prepare(`
             UPDATE cases SET 
-              case_name = ?,
+              case_name = ?, revision = revision + 1,
               updated_at = datetime('now', 'localtime')
             WHERE id = ?
           `).run(case_name, id);
@@ -206,7 +312,7 @@ export async function PUT(request: NextRequest) {
         db.prepare(`
           UPDATE cases SET 
             test_device = ?, test_result = ?, jira_link = ?, fail_note = ?, test_log = ?,
-            test_result_note = ?,
+            test_result_note = ?, revision = revision + 1,
             executor = ?, updated_at = datetime('now', 'localtime')
           WHERE id = ?
         `).run(test_device || '', test_result, normalizedJiraLinks, fail_note || '', test_log || '', test_result_note || '', user.username, id);
@@ -231,15 +337,16 @@ export async function PUT(request: NextRequest) {
       db.prepare(`
         UPDATE cases SET 
           test_device = ?, test_result = ?, jira_link = ?, fail_note = ?, test_log = ?,
-          test_result_note = ?,
+          test_result_note = ?, revision = revision + 1,
           executor = ?, updated_at = datetime('now', 'localtime')
         WHERE id = ?
       `).run(test_device || '', test_result, normalizedJiraLinks, fail_note || '', test_log || '', test_result_note || '', user.username, id);
     }
 
+    const savedRevision = db.prepare('SELECT revision FROM cases WHERE id = ?').get(id) as { revision: number };
     const deviceOptions = getProjectDeviceOptions(db, caseRow.project_id);
 
-    return NextResponse.json({ success: true, deviceOptions });
+    return NextResponse.json({ success: true, revision: savedRevision.revision, deviceOptions });
   } catch (error) {
     console.error('Update case error:', error);
     return NextResponse.json({ error: '更新用例失败' }, { status: 500 });
@@ -256,7 +363,9 @@ export async function PATCH(request: NextRequest) {
     const deviceName = typeof data.test_device === 'string' ? data.test_device.trim() : '';
     if (!caseId) return NextResponse.json({ error: '缺少用例ID' }, { status: 400 });
     if (!deviceName) return NextResponse.json({ error: '请先填写或选择测试设备' }, { status: 400 });
-    if (deviceName.length > 100) return NextResponse.json({ error: '测试设备不能超过100个字符' }, { status: 400 });
+    if (deviceName.length > TEST_DEVICE_MAX_LENGTH) {
+      return NextResponse.json({ error: `测试设备不能超过${TEST_DEVICE_MAX_LENGTH}个字符` }, { status: 400 });
+    }
 
     const db = getDb();
     const sourceCase = db.prepare(`
@@ -297,7 +406,7 @@ export async function PATCH(request: NextRequest) {
     const applyDevice = db.transaction((caseIds: number[]) => {
       const update = db.prepare(`
         UPDATE cases
-        SET test_device = ?, updated_at = datetime('now', 'localtime')
+        SET test_device = ?, revision = revision + 1, updated_at = datetime('now', 'localtime')
         WHERE id = ? AND TRIM(COALESCE(test_device, '')) = ''
       `);
       let updatedCount = 0;
@@ -308,9 +417,11 @@ export async function PATCH(request: NextRequest) {
     });
     const updatedCount = applyDevice(editableCaseIds);
 
+    const sourceRevision = db.prepare('SELECT revision FROM cases WHERE id = ?').get(caseId) as { revision: number };
     return NextResponse.json({
       success: true,
       updatedCount,
+      revision: sourceRevision.revision,
       deviceOptions: getProjectDeviceOptions(db, sourceCase.project_id),
     });
   } catch (error) {
