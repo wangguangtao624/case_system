@@ -231,10 +231,13 @@ def host_metrics():
         key, value = line.split(':', 1)
         mem[key] = int(value.strip().split()[0]) * 1024
     disk = shutil.disk_usage(Path.home())
+    backup_state = read_json(STATE / 'backup.json', {})
     return {'hostname': socket.gethostname(), 'memory_total': mem['MemTotal'],
             'memory_available': mem['MemAvailable'], 'swap_used': mem['SwapTotal'] - mem['SwapFree'],
             'disk_total': disk.total, 'disk_used': disk.used, 'disk_free': disk.free,
             'load': list(os.getloadavg()), 'cpus': os.cpu_count(),
+            'backup_attempt': {'failed': bool(backup_state.get('error')), 'running': backup_state.get('running', False),
+                               'last_attempt': backup_state.get('last_attempt')},
             'memory_pressure': Path('/proc/pressure/memory').read_text() if Path('/proc/pressure/memory').exists() else None}
 
 
@@ -316,10 +319,17 @@ def monitor():
             lowmem = old.get('low_memory_samples', 0) + 1 if remote['memory_available'] / remote['memory_total'] < .2 else 0
             if lowmem >= 10:
                 alerts.append('生产可用内存低于 20% 持续至少 10 次采样')
+            if remote.get('backup_attempt', {}).get('failed'):
+                alerts.append('12 报告最近一次备份失败')
+        drill_state = read_json(STATE / 'restore-drill.json', {})
+        if observer and drill_state.get('ok') is False:
+            alerts.append('最近一次恢复演练失败')
+        if observer and drill_state.get('finished_at') and age(drill_state['finished_at']) > 35 * 86400:
+            alerts.append('恢复演练超过 35 天未完成')
         result = {'sampled_at': now(), 'production': remote if observer else metrics,
                   'http': http, 'development': metrics if observer else remote,
                   'backup': backup_state, 'alerts': alerts, 'failures': failures, 'low_memory_samples': lowmem,
-                  'restore_drill': read_json(STATE / 'restore-drill.json', {}),
+                  'restore_drill': drill_state,
                   'notification': 'dashboard-and-local-events; no external push configured'}
         if old.get('alerts') != alerts:
             events = read_json(STATE / 'events.json', [])
