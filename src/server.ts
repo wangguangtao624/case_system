@@ -78,7 +78,7 @@ async function main() {
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
 
-  server.listen(port, () => {
+  server.listen(port, hostname, () => {
     console.log(
       `> Server listening at http://${hostname}:${port} as ${
         dev ? 'development' : runtimeMode
