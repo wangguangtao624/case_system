@@ -2,6 +2,10 @@
 
 适用项目：`git@github.com:wangguangtao624/case_system.git`。建立日期：2026-10-16。
 
+Windows + VS Code 的连接排查、功能开发例子与内存实测，见 [逐步说明](windows-vscode-example.md)。
+已用 imagegen 生成 [运维流程长图](assets/ops-workflow-long-v2.png)。
+Windows 一键连接脚本为 `ops/client/connect-windows.cmd`，需下载后在个人电脑执行。
+
 ## 1. 角色与边界
 
 |位置|角色|原则|
