@@ -51,6 +51,39 @@ AccuracySec=5s
 WantedBy=timers.target
 EOF
 systemctl daemon-reload
+cat > /etc/systemd/system/case-system-restore-drill.service <<'EOF'
+[Unit]
+Description=Restore latest Case System backup into a fresh isolated clone
+After=network-online.target
+[Service]
+Type=oneshot
+User=casebackup
+Group=casebackup
+Environment=CASE_OPS_STATE=/var/lib/casebackup/ops-state
+ExecStart=/usr/bin/python3 /var/lib/casebackup/tools/case_ops.py drill
+TimeoutStartSec=1800
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/casebackup/ops-state
+StandardOutput=null
+EOF
+cat > /etc/systemd/system/case-system-restore-drill.timer <<'EOF'
+[Unit]
+Description=Monthly Case System restore exercise
+[Timer]
+OnCalendar=*-*-01 03:00:00 Asia/Shanghai
+Persistent=yes
+RandomizedDelaySec=300
+[Install]
+WantedBy=timers.target
+EOF
+systemctl daemon-reload
 systemctl enable --now case-system-observer.service case-system-observer-sample.timer
+systemctl enable --now case-system-restore-drill.timer
 systemctl start case-system-observer-sample.service
 systemctl is-active case-system-observer.service case-system-observer-sample.timer

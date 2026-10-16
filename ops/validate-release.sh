@@ -17,7 +17,7 @@ date --iso-8601=seconds > "$REPORT/started.txt"
 git rev-parse HEAD > "$REPORT/commit.txt"
 node --version > "$REPORT/node-version.txt"
 pnpm --version > "$REPORT/pnpm-version.txt"
-pnpm install --frozen-lockfile > "$REPORT/install.log" 2>&1
+pnpm install --frozen-lockfile --prod=false > "$REPORT/install.log" 2>&1
 pnpm exec tsc --noEmit --incremental false > "$REPORT/types.log" 2>&1
 pnpm lint > "$REPORT/lint.log" 2>&1
 python3 -m unittest discover -s ops -p 'test_*.py' > "$REPORT/ops-tests.log" 2>&1

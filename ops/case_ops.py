@@ -319,6 +319,7 @@ def monitor():
         result = {'sampled_at': now(), 'production': remote if observer else metrics,
                   'http': http, 'development': metrics if observer else remote,
                   'backup': backup_state, 'alerts': alerts, 'failures': failures, 'low_memory_samples': lowmem,
+                  'restore_drill': read_json(STATE / 'restore-drill.json', {}),
                   'notification': 'dashboard-and-local-events; no external push configured'}
         if old.get('alerts') != alerts:
             events = read_json(STATE / 'events.json', [])
@@ -369,6 +370,34 @@ def restore_test(snapshot, destination):
     print(json.dumps({'destination': str(dest), 'verified': result}, ensure_ascii=False))
 
 
+def drill():
+    """Monthly database/file restore exercise on 38; application acceptance is separate."""
+    with lock('restore-drill'):
+        cfg = config()
+        if cfg.get('role') != 'backup-observer':
+            raise RuntimeError('Restore drill is allowed only on the backup observer')
+        base = STATE / 'restore-drills'
+        base.mkdir(exist_ok=True, mode=0o700)
+        dest = base / dt.datetime.now(dt.timezone.utc).strftime('restore-%Y%m%dT%H%M%SZ')
+        try:
+            restore_test(Path(cfg['backup_base']) / 'latest', dest)
+            with connection(dest / 'data/platform.db') as db:
+                if db.execute('PRAGMA integrity_check').fetchall() != [('ok',)]:
+                    raise RuntimeError('Restored SQLite is corrupt')
+                count = db.execute('SELECT count(*) FROM active_sessions').fetchone()[0]
+                if count:
+                    raise RuntimeError('Restored sessions were not invalidated')
+            write_json(STATE / 'restore-drill.json', {'finished_at': now(), 'ok': True,
+                'destination': str(dest), 'scope': 'database integrity, hashes, attachment references, path rewrite and session invalidation; not full application acceptance'})
+            old = sorted(p for p in base.iterdir() if p.is_dir() and not p.is_symlink()
+                         and p.name.startswith('restore-') and (p / 'RESTORE-TEST.json').is_file())
+            for path in old[:-2]:
+                shutil.rmtree(path)
+        except Exception as exc:
+            write_json(STATE / 'restore-drill.json', {'finished_at': now(), 'ok': False, 'error': type(exc).__name__})
+            raise
+
+
 def serve():
     with lock('dashboard'):
         class Handler(http.server.BaseHTTPRequestHandler):
@@ -414,7 +443,7 @@ def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
     subs = parser.add_subparsers(dest='command', required=True)
-    for name in ('backup', 'monitor', 'metrics', 'serve', 'ensure-dashboard'):
+    for name in ('backup', 'monitor', 'metrics', 'serve', 'ensure-dashboard', 'drill'):
         subs.add_parser(name)
     check = subs.add_parser('verify')
     check.add_argument('snapshot')
@@ -438,7 +467,7 @@ def main():
     elif args.command == 'metrics':
         print(json.dumps(host_metrics()))
     else:
-        {'backup': backup, 'monitor': monitor, 'serve': serve, 'ensure-dashboard': ensure_dashboard}[args.command]()
+        {'backup': backup, 'monitor': monitor, 'serve': serve, 'ensure-dashboard': ensure_dashboard, 'drill': drill}[args.command]()
 
 
 if __name__ == '__main__':
