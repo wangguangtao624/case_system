@@ -237,7 +237,8 @@ def host_metrics():
             'disk_total': disk.total, 'disk_used': disk.used, 'disk_free': disk.free,
             'load': list(os.getloadavg()), 'cpus': os.cpu_count(),
             'backup_attempt': {'failed': bool(backup_state.get('error')), 'running': backup_state.get('running', False),
-                               'last_attempt': backup_state.get('last_attempt')},
+                               'last_attempt': backup_state.get('last_attempt'),
+                               'local_verified_at': backup_state.get('local', {}).get('verified_at')},
             'memory_pressure': Path('/proc/pressure/memory').read_text() if Path('/proc/pressure/memory').exists() else None}
 
 
@@ -316,6 +317,11 @@ def monitor():
                 remote = {'error': type(exc).__name__}
                 alerts.append('无法采集 ' + ('12' if observer else '38') + ' 状态')
         if observer and remote and not remote.get('error'):
+            attempt = remote.get('backup_attempt', {})
+            backup_state['local'] = {'verified_at': attempt.get('local_verified_at')}
+            backup_state['running'] = attempt.get('running', False)
+            if attempt.get('failed'):
+                backup_state['error'] = '12 报告最近一次备份失败'
             lowmem = old.get('low_memory_samples', 0) + 1 if remote['memory_available'] / remote['memory_total'] < .2 else 0
             if lowmem >= 10:
                 alerts.append('生产可用内存低于 20% 持续至少 10 次采样')

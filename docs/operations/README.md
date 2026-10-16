@@ -63,6 +63,9 @@ package.json 的 packageManager 及旧文档版本存在差异，后续单独整
 执行 tsc、lint、运维恢复测试、Next 构建和服务端打包。任意一步失败即停止。
 结果保存到 `~/case-system/validation/<commit>/`。
 业务测试由任务决定，例如现有 `pnpm exec tsx --test tests/tree-loader.test.ts`。
+验证脚本也会自动执行 tests/ 下的 *.test.ts；新增功能需补充真正覆盖业务行为的测试。
+38 已安装 agent-browser 0.27.0 与 Chrome，浏览器执行路径已加入登录环境。
+Codex 在 38 使用独立浏览器会话验证预发布，不复用生产登录态；界面截图避免暴露业务内容。
 类型检查与构建成功不代表业务正确；登录、权限、保存、并发修改、附件、统计都要覆盖。
 历史 lint 错误不能忽略为“通过”，也不应为运维任务随意重写业务代码；记录并另开修复任务。
 
