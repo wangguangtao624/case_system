@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { isHttpJiraLink, parseJiraLinks, serializeJiraLinks } from '@/lib/jira-links';
 import { ReportDownloadButton } from '@/components/report-download-button';
+import { createTreeLoader } from '@/lib/tree-loader';
 
 async function copyText(text: string) {
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
@@ -401,8 +402,8 @@ export default function DashboardPage() {
   const MIN_SIDEBAR_WIDTH = 300;
   const [loading, setLoading] = useState(true);
   const [allUsers, setAllUsers] = useState<UserItem[]>([]);
-  const [testerFilter, setTesterFilter] = useState<string>(''); // '' = all, 'my' = my tasks, user_id = specific
-  const [projectFilter, setProjectFilter] = useState<string>('active'); // 'draft', 'active', 'archived', 'all'
+  const [testerFilter, setTesterFilterState] = useState<string>(''); // '' = all, 'my' = my tasks, user_id = specific
+  const [projectFilter, setProjectFilterState] = useState<string>('active'); // 'draft', 'active', 'archived', 'all'
   const [archiveDialog, setArchiveDialog] = useState<{ projectId: number; projectName: string } | null>(null);
   const [archiveNote, setArchiveNote] = useState('');
   const [archiving, setArchiving] = useState(false);
@@ -435,25 +436,18 @@ export default function DashboardPage() {
   const [showPreview, setShowPreview] = useState<{ fileId: number; content: string; filename: string; truncated: boolean; mediaType?: PreviewMediaType; downloadUrl?: string; previewUrl?: string } | null>(null);
   const [statsPreview, setStatsPreview] = useState<{ level: 'project' | 'module'; id: number; name: string } | null>(null);
 
-  const loadTree = useCallback(async (filterTesterId?: string, archiveFilter?: string) => {
-    try {
-      const params = new URLSearchParams();
-      if (filterTesterId) params.set('testerId', filterTesterId);
-      if (archiveFilter) params.set('archive', archiveFilter);
-      const res = await fetch(`/api/tree?${params.toString()}`);
-      const data = await res.json();
-      if (data.tree) {
-        setTree(data.tree);
-      }
-      if (data.isManager !== undefined) {
-        setIsManager(data.isManager);
-      }
-      return data.tree as TreeNode[] | undefined;
-    } catch (error) {
-      console.error('Load tree error:', error);
-      return undefined;
-    }
-  }, []);
+  const [treeLoader] = useState(() => createTreeLoader<TreeNode>(setTree, setIsManager));
+  const loadTree = useCallback(() => treeLoader.load(), [treeLoader]);
+  const setTesterFilter = useCallback((value: string) => {
+    treeLoader.setFilters({ testerId: value === 'my' && user ? String(user.id) : value });
+    setTesterFilterState(value);
+  }, [treeLoader, user]);
+  const setProjectFilter = useCallback((value: string) => {
+    treeLoader.setFilters({ archive: value });
+    setProjectFilterState(value);
+  }, [treeLoader]);
+
+  useEffect(() => () => treeLoader.dispose(), [treeLoader]);
 
   const refreshBugTodoCount = useCallback(async () => {
     if (!user) return;
@@ -524,8 +518,7 @@ export default function DashboardPage() {
   }, []);
 
   const refreshKanbanAssignmentViews = useCallback(async () => {
-    const resolvedTesterFilter = testerFilter === 'my' && user ? String(user.id) : testerFilter || '';
-    await loadTree(resolvedTesterFilter, projectFilter);
+    await loadTree();
 
     if (showKanban) {
       await fetchKanbanData(kanbanPriorityMode);
@@ -543,13 +536,10 @@ export default function DashboardPage() {
     fetchProjectOverview,
     kanbanPriorityMode,
     loadTree,
-    projectFilter,
     selectedProjectOverview,
     selectedProjectOverviewMode,
     selectedProjectOverviewTesterFilter,
     showKanban,
-    testerFilter,
-    user,
   ]);
 
   const handleAssignTargetFromKanban = useCallback(async (
@@ -635,7 +625,7 @@ export default function DashboardPage() {
         if (data.user) {
           setUser(data.user);
           setIsManager(MANAGER_USERNAMES.includes(data.user.username));
-          loadTree('', 'active');
+          loadTree();
           // Load all users for tester filter and assignment
           fetch('/api/users').then(r => r.json()).then(d => {
             if (d.users) setAllUsers(d.users);
@@ -646,7 +636,7 @@ export default function DashboardPage() {
       })
       .catch(() => router.push('/login'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [loadTree, router]);
 
   const [casePermissions, setCasePermissions] = useState<CasePermissions>({ isManager: false, isAssignedTester: false, canEditCore: false, canEditResult: false });
   const [caseTester, setCaseTester] = useState<CaseTester | null>(null);
@@ -736,7 +726,7 @@ export default function DashboardPage() {
     let path = findNodePathByDbId(tree, type, dbId);
     if (!path) {
       setTesterFilter('');
-      const freshTree = await loadTree('', projectFilter);
+      const freshTree = await loadTree();
       path = freshTree ? findNodePathByDbId(freshTree, type, dbId) : null;
     }
     if (path) {
@@ -745,7 +735,7 @@ export default function DashboardPage() {
     } else {
       setSelectedNodeId(`${type}-${dbId}`);
     }
-  }, [expandNodePath, findNodePathByDbId, loadTree, projectFilter, tree]);
+  }, [expandNodePath, findNodePathByDbId, loadTree, setTesterFilter, tree]);
 
   const handleOpenCaseById = useCallback(async (caseId: number) => {
     setShowKanban(false);
@@ -766,7 +756,7 @@ export default function DashboardPage() {
       if (data.case) {
         if (!matchedPath) {
           setTesterFilter('');
-          const freshTree = await loadTree('', projectFilter);
+          const freshTree = await loadTree();
           const freshPath = freshTree ? findNodePathByDbId(freshTree, 'case', caseId) : null;
           if (freshPath) {
             expandNodePath(freshPath);
@@ -786,7 +776,7 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('Load case error:', error);
     }
-  }, [expandNodePath, findCaseNodeByDbId, findNodePathByDbId, loadTree, projectFilter, tree]);
+  }, [expandNodePath, findCaseNodeByDbId, findNodePathByDbId, loadTree, setTesterFilter, tree]);
 
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -799,8 +789,7 @@ export default function DashboardPage() {
     setSelectedNodeId(null);
     setSelectedProjectOverview(null);
     setSelectedProjectSpace(null);
-    const filterId = value === 'my' && user ? String(user.id) : value;
-    loadTree(filterId || '', projectFilter);
+    loadTree();
   };
 
   const handleProjectFilterChange = (value: string) => {
@@ -809,8 +798,7 @@ export default function DashboardPage() {
     setSelectedNodeId(null);
     setSelectedProjectOverview(null);
     setSelectedProjectSpace(null);
-    const filterId = testerFilter === 'my' && user ? String(user.id) : testerFilter;
-    loadTree(filterId || '', value);
+    loadTree();
   };
 
   const handleSelectProjectSpace = useCallback((projectId: number, projectName: string) => {
@@ -837,7 +825,7 @@ export default function DashboardPage() {
       if (data.success) {
         setArchiveDialog(null);
         setArchiveNote('');
-        loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
+        loadTree();
       } else {
         alert(data.error || '归档失败');
       }
@@ -854,7 +842,7 @@ export default function DashboardPage() {
       const res = await fetch(`/api/archives?projectId=${projectId}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
-        loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
+        loadTree();
       } else {
         alert(data.error || '删除失败');
       }
@@ -880,7 +868,7 @@ export default function DashboardPage() {
       setSelectedProjectOverview(null);
       setSelectedNodeId(null);
       setProjectFilter('active');
-      loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', 'active');
+      loadTree();
     } catch {
       alert('撤销归档失败');
     }
@@ -1016,7 +1004,7 @@ export default function DashboardPage() {
                 fetchProjectOverview(projectId, 'all', overviewTesterFilter);
               }}
               onSelectProjectSpace={handleSelectProjectSpace}
-              onTreeChange={() => loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter)}
+              onTreeChange={() => loadTree()}
               onToggleSidebar={() => setSidebarCollapsed(true)}
               onPreview={(level, id, name) => setStatsPreview({ level, id, name })}
               isManager={isManager}
@@ -1038,11 +1026,7 @@ export default function DashboardPage() {
                     alert(data.error || '发布失败');
                     return;
                   }
-                  if (projectFilter === 'draft') {
-                    loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', 'draft');
-                  } else {
-                    loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
-                  }
+                  loadTree();
                 } catch {
                   alert('发布失败');
                 }
@@ -1169,7 +1153,7 @@ export default function DashboardPage() {
                 }).then(r => r.json()).then(data => {
                   if (data.success) {
                     // Reload case to get updated tester info
-                    loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter);
+                    loadTree();
                     // Reload case detail
                     fetch(`/api/cases/${selectedCase.id}?_t=${Date.now()}`)
                       .then(r => r.json())
@@ -1188,7 +1172,7 @@ export default function DashboardPage() {
                   .then(r => r.json())
                   .then(data => {
                     if (data.success) {
-                      loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter);
+                      loadTree();
                       fetch(`/api/cases/${selectedCase.id}?_t=${Date.now()}`)
                         .then(r => r.json())
                         .then(d => {
@@ -1204,7 +1188,7 @@ export default function DashboardPage() {
               onGenerateReport={(caseId) => copyDynamicReportLink({ scope: 'case', caseId }).then(() => alert('动态报告链接已复制')).catch(error => alert(error.message))}
               onUpdate={(updatedCase) => {
                 setSelectedCase(updatedCase);
-                loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter); // Refresh tree to update test result icons
+                loadTree(); // Refresh tree to update test result icons
               }}
               onFilesChange={(files) => setSelectedFiles(files)}
               onPreviewFile={(fileId, content, filename, truncated, options) => {
