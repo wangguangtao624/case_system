@@ -21,6 +21,12 @@ pnpm install --frozen-lockfile --prod=false > "$REPORT/install.log" 2>&1
 pnpm exec tsc --noEmit --incremental false > "$REPORT/types.log" 2>&1
 pnpm lint > "$REPORT/lint.log" 2>&1
 python3 -m unittest discover -s ops -p 'test_*.py' > "$REPORT/ops-tests.log" 2>&1
+if [[ -d tests ]]; then
+    mapfile -t test_files < <(rg --files tests -g '*.test.ts')
+    if (( ${#test_files[@]} )); then
+        pnpm exec tsx --test "${test_files[@]}" > "$REPORT/business-tests.log" 2>&1
+    fi
+fi
 pnpm exec next build > "$REPORT/build.log" 2>&1
 pnpm exec tsup src/server.ts --format cjs --platform node --target node20 --outDir dist --no-splitting --no-minify > "$REPORT/server-build.log" 2>&1
 git diff --exit-code -- pnpm-lock.yaml package.json > "$REPORT/lock-check.log"

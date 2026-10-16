@@ -34,9 +34,13 @@
 - 修复现有 server.listen 未传 hostname 的问题，仅部署在 38；12 的业务源码没有应用此补丁。
 - 修复后 ss 显示 127.0.0.1:5001；从 12 直接访问 38:5001 失败，隧道访问成功。
 - 38 面板显示最新快照和演练结果；采样与备份均由持续服务运行，不依赖聊天存活。
+- 监控面板已完成实际浏览器检查，桌面及 390px 手机宽度均无横向溢出，刷新正常。
+- 预发布实际浏览器登录进入 /dashboard；浏览器会话访问鉴权与目录接口均为 200，无 JavaScript 错误。
+- 浏览器工具部署在 38，默认沙箱启动成功；不需要关闭浏览器沙箱。
 
 验证日志位于 38 的 ~/case-system/validation/、~/case-system/staging-smoke.json、
 ~/case-system/staging-postfix-types.log、~/case-system/final-ops-tests.log。
+浏览器验证结果为 ~/case-system/browser-verification.json，监控截图为 ~/case-system/monitor-verified.png。
 
 ## 当前发布门禁与后续任务
 
