@@ -174,6 +174,10 @@ Codex 不会在聊天结束后继续自主思考。持续运行的是已安装�
 
 12→38 专用运维私钥只在 12；开发机不复制该私钥，也不复制 GitHub 私钥。
 38→12 监控 key 的 authorized_keys 绑定来源 IP、强制 metrics 命令、禁用转发。
-38 开发访问 GitHub 初始采用 12 转发的 bundle；直接 push/fetch 要配置该机独立 GitHub 凭据。
-可通过 12 的现有授权代推经过核对的开发分支，不能把个人私钥复制过去。
+38 开发的 origin 使用 `case-system-git-relay:/case-system.git`，github 远端保留真实仓库地址。
+Git 转发通道使用 38 独立 key，12 强制仅允许针对一个独立 bare 仓库的 Git 协议命令。
+允许推送 dev/、feature/、fix/、ops/ 分支，拒绝 main/master、标签、删除和非快进覆盖。
+12 的 post-receive 钩子把收到的开发分支推到 GitHub，既有个人 GitHub 私钥不离开 12。
+若日志提示 GitHub 推送失败，Codex 必须核对并补推，不能把中转接收成功当成远端同步成功。
+转发通道不改生产工作目录；38→12 的开发 key 不能执行任意生产命令。
 bootstrap-38.sh 中的内容仅为公钥；不含密码。不要把密码写入任务、源码或配置。
