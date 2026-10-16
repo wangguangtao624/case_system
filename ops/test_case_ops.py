@@ -5,6 +5,7 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('case_ops', Path(__file__).with_name('case_ops.py'))
 ops = importlib.util.module_from_spec(spec)
@@ -91,6 +92,58 @@ class BackupTests(unittest.TestCase):
                 self.assertEqual(dst.execute('SELECT value FROM test').fetchone()[0],'latest committed data')
         finally:
             src.close()
+
+    def test_failed_remote_verification_never_promotes_latest(self):
+        cfg=ops.config()
+        cfg['backup_remote']={'identity':'/not-used','user':'backup','host':'test',
+                              'base':'/srv/backups','tool':'/tool.py'}
+        ops.write_json(ops.STATE/'config.json',cfg)
+        commands=[]
+        def remote(_,args,timeout=60):
+            commands.append(args)
+            if args[0]=='python3':
+                raise RuntimeError('remote checksum failed')
+            return ''
+        with patch.object(ops,'snapshot_local',return_value=(self.snapshot,{'verified_at':ops.now()})), \
+             patch.object(ops,'remote_run',side_effect=remote),patch.object(ops,'run',return_value=''):
+            with self.assertRaisesRegex(RuntimeError,'checksum'):
+                ops.backup()
+        self.assertFalse(any(c[0] in ('mv','ln') for c in commands))
+        status=ops.read_json(ops.STATE/'backup.json')
+        self.assertFalse(status['running'])
+        self.assertNotIn('remote',status)
+        self.assertIn('checksum',status['error'])
+
+    def test_http_alert_requires_three_failures_and_records_recovery(self):
+        cfg=ops.config();cfg['health_urls']={'app':'http://not-used'}
+        ops.write_json(ops.STATE/'config.json',cfg)
+        ops.write_json(ops.STATE/'backup.json',{'remote':{'verified_at':ops.now()}})
+        with patch.object(ops,'probe',return_value={'ok':False,'ms':1}):
+            for _ in range(2):
+                ops.monitor()
+                self.assertFalse(any('HTTP' in a for a in ops.read_json(ops.STATE/'status.json')['alerts']))
+            ops.monitor()
+            self.assertTrue(any('HTTP' in a for a in ops.read_json(ops.STATE/'status.json')['alerts']))
+        with patch.object(ops,'probe',return_value={'ok':True,'ms':1}):
+            ops.monitor()
+        self.assertFalse(any('HTTP' in a for a in ops.read_json(ops.STATE/'status.json')['alerts']))
+        self.assertEqual(ops.read_json(ops.STATE/'events.json')[-1]['alerts'],[])
+
+    def test_drill_is_not_allowed_on_production(self):
+        with self.assertRaisesRegex(RuntimeError,'backup observer'):
+            ops.drill()
+
+    def test_prune_preserves_latest_and_unrecognized_directories(self):
+        base=self.base/'retention';base.mkdir()
+        oldest=base/'old';oldest.mkdir()
+        ops.write_json(oldest/'manifest.json',{'format':'case-system-backup-v1','created_at':'2020-01-01T00:00:00+00:00'})
+        ops.write_json(oldest/'verification.json',{})
+        (base/'latest').symlink_to('old')
+        unknown=base/'unrelated';unknown.mkdir()
+        (unknown/'important.txt').write_text('keep')
+        ops.prune(base)
+        self.assertTrue(oldest.exists())
+        self.assertTrue((unknown/'important.txt').exists())
 
 
 if __name__ == '__main__':
