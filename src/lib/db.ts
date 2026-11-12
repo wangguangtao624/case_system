@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { migrateProjectClassification } from './project-migration';
 import path from 'path';
 import fs from 'fs';
 import { getWorkspaceRoot } from '@/lib/runtime';
@@ -142,6 +143,8 @@ function initializeDatabase(db: Database.Database) {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_project_space_files_project_created ON project_space_files(project_id, created_at DESC)`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_project_space_files_owner_created ON project_space_files(project_id, owner_user_id, created_at DESC)`);
   } catch { /* ignore index errors */ }
+
+  migrateProjectClassification(db);
 
   // Migration: add is_public column to projects table
   try {

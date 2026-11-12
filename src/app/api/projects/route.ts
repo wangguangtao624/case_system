@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { validateClassification, type ProjectClassification } from '@/lib/project-classification';
 import { getDb } from '@/lib/db';
 import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
@@ -28,17 +29,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: '无创建权限' }, { status: 403 });
     }
 
-    const { name } = await request.json();
-    if (!name || !name.trim()) {
+    const body = await request.json();
+    const { name } = body;
+    if (typeof name !== 'string' || !name.trim() || name.length > 200) {
       return NextResponse.json({ error: '请输入项目名称' }, { status: 400 });
     }
 
+    let classification;
+    try { classification = validateClassification(body); }
+    catch (error) { return NextResponse.json({ error: (error as Error).message }, { status: 400 }); }
     const db = getDb();
     const maxOrder = db.prepare('SELECT MAX(sort_order) as m FROM projects').get() as { m: number | null };
     const result = db.prepare(`
-      INSERT INTO projects (user_id, name, sort_order, is_public, publish_status)
-      VALUES (?, ?, ?, 1, 'draft')
-    `).run(user.id, name.trim(), (maxOrder.m || 0) + 1);
+      INSERT INTO projects (user_id, name, sort_order, is_public, publish_status, test_type, chip_model, firmware_version)
+      VALUES (?, ?, ?, 1, 'draft', ?, ?, ?)
+    `).run(user.id, name.trim(), (maxOrder.m || 0) + 1, classification.test_type, classification.chip_model, classification.firmware_version);
 
     return NextResponse.json({ success: true, id: result.lastInsertRowid });
   } catch (error) {
@@ -55,13 +60,14 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ error: '无修改权限' }, { status: 403 });
     }
 
-    const { id, name, start_date, end_date, priorityMode, action } = await request.json();
+    const body = await request.json();
+    const { id, name, start_date, end_date, priorityMode, action } = body;
     if (!id) {
       return NextResponse.json({ error: '参数错误' }, { status: 400 });
     }
 
     const db = getDb();
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as { id: number; publish_status?: string } | undefined;
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id) as ({ id: number; publish_status?: string } & ProjectClassification) | undefined;
     if (!project) return NextResponse.json({ error: '项目不存在' }, { status: 404 });
 
     if (action === 'publish') {
@@ -76,16 +82,25 @@ export async function PUT(request: NextRequest) {
       return NextResponse.json({ success: true, publishStatus: 'published' });
     }
 
-    if (name !== undefined && name !== null) {
-      if (!name.trim()) return NextResponse.json({ error: '项目名称不能为空' }, { status: 400 });
-      db.prepare('UPDATE projects SET name = ? WHERE id = ?').run(name.trim(), id);
+    const updatesClassification = ['test_type', 'chip_model', 'firmware_version'].some(key => body[key] !== undefined);
+    let classification = project;
+    if (updatesClassification) {
+      try { classification = { ...project, ...validateClassification(body, project) }; }
+      catch (error) { return NextResponse.json({ error: (error as Error).message }, { status: 400 }); }
+    }
+    if (name !== undefined && (typeof name !== 'string' || !name.trim() || name.length > 200)) {
+      return NextResponse.json({ error: '项目名称不能为空且不能超过 200 字' }, { status: 400 });
+    }
+    if (updatesClassification || name !== undefined) {
+      db.prepare('UPDATE projects SET name = COALESCE(?, name), test_type = ?, chip_model = ?, firmware_version = ? WHERE id = ?')
+        .run(name === undefined ? null : name.trim(), classification.test_type, classification.chip_model, classification.firmware_version, id);
     }
 
     if (start_date !== undefined || end_date !== undefined) {
       const isHighPriorityMode = priorityMode === 'high';
       const startField = isHighPriorityMode ? 'high_priority_start_date' : 'start_date';
       const endField = isHighPriorityMode ? 'high_priority_end_date' : 'end_date';
-      const currentProject = project as Record<string, unknown>;
+      const currentProject = project as unknown as Record<string, unknown>;
       const sd = start_date !== undefined ? start_date : currentProject[startField] as string | null;
       const ed = end_date !== undefined ? end_date : currentProject[endField] as string | null;
       db.prepare(`UPDATE projects SET ${startField} = ?, ${endField} = ? WHERE id = ?`).run(sd, ed, id);

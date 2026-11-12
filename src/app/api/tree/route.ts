@@ -79,6 +79,9 @@ export async function GET(request: NextRequest) {
     const projects = db.prepare(projectQuery).all() as {
       id: number;
       name: string;
+      test_type: 'firmware' | 'chip' | 'tool';
+      chip_model: string;
+      firmware_version: string;
       sort_order: number;
       is_public: number;
       user_id: number;
@@ -180,6 +183,9 @@ export async function GET(request: NextRequest) {
         type: 'project',
         dbId: project.id,
         name: project.name,
+        testType: project.test_type,
+        chipModel: project.chip_model,
+        firmwareVersion: project.firmware_version,
         children: [
           {
             id: `project-space-${project.id}`,
@@ -216,6 +222,9 @@ interface TreeNode {
   type: 'project' | 'project-space' | 'module' | 'case';
   dbId: number;
   name: string;
+  testType?: 'firmware' | 'chip' | 'tool';
+  chipModel?: string;
+  firmwareVersion?: string;
   caseNo?: string;
   testResult?: string | null;
   projectId?: number;

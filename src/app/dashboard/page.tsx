@@ -6,6 +6,9 @@ import { useRouter } from 'next/navigation';
 import { isHttpJiraLink, parseJiraLinks, serializeJiraLinks } from '@/lib/jira-links';
 import { ReportDownloadButton } from '@/components/report-download-button';
 import { createTreeLoader } from '@/lib/tree-loader';
+import { ProjectWorkspace, ProjectEditor, TypeTabs, type TypeFilter, type WorkspaceProject } from '@/components/workspace/project-workspace';
+import { groupProjects, TEST_TYPE_LABELS, type TestType } from '@/lib/project-classification';
+import { Cpu, Wrench, Layers3, LayoutDashboard } from 'lucide-react';
 
 async function copyText(text: string) {
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
@@ -80,6 +83,9 @@ interface TreeNode {
   type: 'project' | 'project-space' | 'module' | 'case';
   dbId: number;
   name: string;
+  testType?: TestType;
+  chipModel?: string;
+  firmwareVersion?: string;
   caseNo?: string;
   testResult?: string | null;
   projectId?: number;
@@ -390,6 +396,9 @@ export default function DashboardPage() {
   const router = useRouter();
   const [user, setUser] = useState<UserInfo | null>(null);
   const [isManager, setIsManager] = useState(false);
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  const [projectEditor, setProjectEditor] = useState<{ project: WorkspaceProject | null } | null>(null);
+  const [projectNotice, setProjectNotice] = useState('');
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [selectedCase, setSelectedCase] = useState<CaseData | null>(null);
   const [selectedFiles, setSelectedFiles] = useState<FileData[]>([]);
@@ -474,7 +483,7 @@ export default function DashboardPage() {
   const fetchKanbanData = useCallback(async (priorityMode: KanbanPriorityMode) => {
     setKanbanLoading(true);
     try {
-      const params = new URLSearchParams({ priorityMode });
+      const params = new URLSearchParams({ priorityMode, testType: typeFilter });
       const response = await fetch(`/api/stats/kanban?${params.toString()}`);
       const result = await response.json();
       setKanbanData(result);
@@ -484,7 +493,7 @@ export default function DashboardPage() {
     } finally {
       setKanbanLoading(false);
     }
-  }, []);
+  }, [typeFilter]);
 
   const fetchProjectOverview = useCallback(async (
     projectId: number,
@@ -496,6 +505,7 @@ export default function DashboardPage() {
     setKanbanData(null);
     setSelectedCase(null);
     setSelectedProjectSpace(null);
+    setSelectedProjectOverview(null);
     setSelectedProjectOverviewLoading(true);
     setSelectedProjectOverviewMode(priorityMode);
     setSelectedProjectOverviewTesterFilter(overviewTesterFilter);
@@ -900,6 +910,8 @@ export default function DashboardPage() {
     }
   };
 
+  const contextProject = tree.find(p => p.dbId === (selectedCase?.project_id || selectedProjectOverview?.id || selectedProjectSpace?.projectId));
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ backgroundColor: '#F5F5F5' }}>
@@ -914,9 +926,9 @@ export default function DashboardPage() {
   if (!user) return null;
 
   return (
-    <div className="h-screen flex flex-col" style={{ backgroundColor: '#FFFFFF' }}>
+    <div className="case-workspace h-screen flex flex-col" style={{ backgroundColor: '#FFFFFF' }}>
       {/* Header */}
-      <header className="flex items-center justify-between px-4 h-12 border-b" style={{ backgroundColor: '#FFFFFF', borderColor: '#EEEEEE' }}>
+      <header className="workspace-header flex items-center justify-between px-5 h-16 shrink-0 border-b" style={{ backgroundColor: '#FFFFFF', borderColor: '#EEEEEE' }}>
         <div className="flex items-center gap-3">
           <div className="flex items-center justify-center w-7 h-7 rounded" style={{ backgroundColor: '#0073E6' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -924,7 +936,7 @@ export default function DashboardPage() {
               <polyline points="14 2 14 8 20 8" />
             </svg>
           </div>
-          <span className="font-bold text-sm" style={{ color: '#333' }}>测试用例管理平台</span>
+          <button className="text-left" onClick={() => { setSelectedCase(null); setSelectedNodeId(null); setSelectedProjectOverview(null); setSelectedProjectSpace(null); setShowKanban(false); setShowJiraBoard(false); }}><span className="font-bold text-sm" style={{ color: '#172B4D' }}>CASE<span className="text-blue-600"> / </span>质量管理平台</span><span className="block text-[10px] tracking-widest text-slate-400">TEST MANAGEMENT WORKSPACE</span></button>{process.env.NODE_ENV === 'development' && <span className="workspace-env">开发环境</span>}
         </div>
         <div className="flex items-center gap-2">
           {isManager && (
@@ -983,7 +995,7 @@ export default function DashboardPage() {
           className="flex-shrink-0 border-r flex flex-col overflow-hidden"
           style={{
             width: sidebarCollapsed ? '0px' : `${sidebarWidth}px`,
-            backgroundColor: '#F5F5F5',
+            backgroundColor: '#F8FAFC',
             borderColor: '#EEEEEE',
             transition: sidebarCollapsed ? 'width 0.2s ease' : (isResizing ? 'none' : 'width 0.2s ease'),
           }}
@@ -991,7 +1003,13 @@ export default function DashboardPage() {
           {!sidebarCollapsed && (
             <SidebarTree
               user={user}
-              tree={tree}
+              tree={tree.filter(p => typeFilter === 'all' || (p.testType || 'firmware') === typeFilter)}
+              allProjects={tree}
+              typeFilter={typeFilter}
+              onTypeFilterChange={value => { setTypeFilter(value); setSelectedCase(null); setSelectedProjectOverview(null); setSelectedProjectSpace(null); setSelectedNodeId(null); setShowKanban(false); setShowJiraBoard(false); }}
+              onCreateProject={() => setProjectEditor({ project: null })}
+              onEditProject={node => setProjectEditor({ project: node })}
+              onOpenWorkspace={() => { setSelectedCase(null); setSelectedProjectOverview(null); setSelectedProjectSpace(null); setSelectedNodeId(null); setShowKanban(false); setShowJiraBoard(false); }}
               expandedNodes={expandedNodes}
               setExpandedNodes={setExpandedNodes}
               selectedNodeId={selectedNodeId}
@@ -1098,6 +1116,8 @@ export default function DashboardPage() {
 
         {/* Content Area */}
         <main className="flex-1 overflow-auto" style={{ backgroundColor: '#FFFFFF' }}>
+          {(contextProject || showKanban) && <div className="workspace-context-bar"><button onClick={() => { setSelectedCase(null); setSelectedProjectOverview(null); setSelectedProjectSpace(null); setSelectedNodeId(null); setShowKanban(false); setShowJiraBoard(false); }}>测试工作台</button><span>/</span>{contextProject ? <><span>{TEST_TYPE_LABELS[contextProject.testType || 'firmware']}</span>{contextProject.chipModel && <><span>/</span><strong>{contextProject.chipModel}</strong></>}<span>/</span><span className="truncate">{contextProject.name}</span>{isManager && <button className="ml-auto shrink-0" onClick={() => setProjectEditor({ project: contextProject })}>项目设置</button>}</> : <strong>项目看板 · {typeFilter === 'all' ? '全部测试' : TEST_TYPE_LABELS[typeFilter]}</strong>}</div>}
+
           {showJiraBoard ? (
             <JiraBoardView
               data={jiraBoardData}
@@ -1222,19 +1242,25 @@ export default function DashboardPage() {
               </div>
             </div>
           ) : (
-            <div className="flex items-center justify-center h-full" style={{ color: '#999' }}>
-              <div className="text-center">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#DDD" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="mx-auto mb-3">
-                  <path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z" />
-                  <polyline points="14 2 14 8 20 8" />
-                </svg>
-                <p className="text-sm">请从左侧目录选择用例查看</p>
-              </div>
-            </div>
+            <ProjectWorkspace projects={tree} filter={typeFilter} onFilter={setTypeFilter}
+              onOpen={id => { setSelectedNodeId(`project-${id}`); setExpandedNodes(new Set([...expandedNodes, `project-${id}`])); fetchProjectOverview(id, 'all', testerFilter === 'my' ? String(user.id) : testerFilter || 'all'); }}
+              onEdit={project => setProjectEditor({ project })} onCreate={() => setProjectEditor({ project: null })}
+              isManager={isManager} scopeLabel={{ active: '进行中', draft: '未发布', archived: '已归档', all: '全部状态' }[projectFilter] || '当前范围'} />
           )}
         </main>
       </div>
 
+      {projectNotice && <div className="workspace-toast" role="status">{projectNotice}</div>}
+      {projectEditor && <ProjectEditor project={projectEditor.project} defaultType={typeFilter}
+        chips={[...new Set(tree.map(p => p.chipModel).filter(Boolean))] as string[]}
+        onClose={() => setProjectEditor(null)}
+        onSaved={(_id, type, created) => {
+          setProjectEditor(null); setTypeFilter(type);
+          setSelectedCase(null); setSelectedProjectOverview(null); setSelectedProjectSpace(null); setSelectedNodeId(null); setShowKanban(false); setShowJiraBoard(false);
+          if (created) setProjectFilter('draft');
+          loadTree(); setProjectNotice(created ? '项目已创建，可导入用例并发布给团队' : '项目设置已保存，分类已更新');
+          window.setTimeout(() => setProjectNotice(''), 3500);
+        }} />}
       {/* Dialogs */}
       {showUserMgmt && isManager && (
         <UserManagementDialog onClose={() => { setShowUserMgmt(false); }} />
@@ -1448,6 +1474,7 @@ export default function DashboardPage() {
 
 // ============ Sidebar Tree ============
 function SidebarTree({
+  allProjects, typeFilter, onTypeFilterChange, onCreateProject, onEditProject, onOpenWorkspace,
   user,
   tree,
   expandedNodes,
@@ -1472,6 +1499,12 @@ function SidebarTree({
   onDeleteArchived,
   onRestoreArchived,
 }: {
+  allProjects: TreeNode[];
+  typeFilter: TypeFilter;
+  onTypeFilterChange: (value: TypeFilter) => void;
+  onCreateProject: () => void;
+  onEditProject: (node: TreeNode) => void;
+  onOpenWorkspace: () => void;
   user: UserInfo;
   tree: TreeNode[];
   expandedNodes: Set<string>;
@@ -1564,6 +1597,7 @@ function SidebarTree({
   };
 
   const handleAddNode = (parentId: string, type: 'project' | 'module' | 'case') => {
+    if (type === 'project') { onCreateProject(); return; }
     setAddingNode({ parentId, type, name: '' });
     setContextMenu(null);
     // Auto-expand the parent node so the input field appears
@@ -1578,11 +1612,9 @@ function SidebarTree({
     if (!addingNode || !addingNode.name.trim()) return;
     try {
       if (addingNode.type === 'project') {
-        await fetch('/api/projects', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: addingNode.name.trim() }),
-        });
+        setAddingNode(null);
+        onCreateProject();
+        return;
       } else if (addingNode.type === 'module') {
         const projectId = Number(addingNode.parentId.replace('project-', ''));
         await fetch('/api/modules', {
@@ -1599,11 +1631,7 @@ function SidebarTree({
         });
       }
       setAddingNode(null);
-      if (addingNode.type === 'project' && projectFilter !== 'draft') {
-        onProjectFilterChange('draft');
-      } else {
-        onTreeChange();
-      }
+      onTreeChange();
     } catch (error) {
       console.error('Add node error:', error);
     }
@@ -1844,6 +1872,7 @@ function SidebarTree({
             </span>
           )}
 
+          {isManager && node.type === 'project' && <button className="sidebar-project-settings" title="项目设置" aria-label={`设置 ${node.name}`} onClick={e => { e.stopPropagation(); onEditProject(node); }}>···</button>}
           {/* Action buttons on hover - managers only */}
           {!isEditing && isManager && node.type !== 'project-space' && (
             <span className="hidden group-hover:flex items-center gap-0.5 ml-1 flex-shrink-0">
@@ -1951,11 +1980,11 @@ function SidebarTree({
     <div className="h-full flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2 border-b" style={{ borderColor: '#EEEEEE' }}>
-        <span className="font-bold text-sm" style={{ color: '#333' }}>任务列表</span>
+        <span className="font-bold text-sm" style={{ color: '#333' }}>测试目录</span>
         <div className="flex items-center gap-1">
           {isManager && (
             <button
-              onClick={() => setAddingNode({ parentId: 'root', type: 'project', name: '' })}
+              onClick={onCreateProject}
               className="p-1 rounded hover:bg-gray-200 transition-colors"
               title="新建项目"
             >
@@ -1972,6 +2001,7 @@ function SidebarTree({
         </div>
       </div>
 
+      <div className="px-3 pt-3"><button className="workspace-nav-home" onClick={onOpenWorkspace}><LayoutDashboard size={16}/>测试工作台</button><TypeTabs value={typeFilter} onChange={onTypeFilterChange} projects={allProjects} compact/></div>
       {/* Two-level Filter */}
       <div className="px-3 py-2 border-b space-y-2" style={{ borderColor: '#EEEEEE' }}>
         <div className="grid grid-cols-2 gap-2">
@@ -2039,7 +2069,10 @@ function SidebarTree({
             />
           </div>
         )}
-        {tree.map(node => renderNode(node, 0))}
+        {groupProjects(tree).map(group => {
+          const Icon = group.type === 'chip' ? Cpu : group.type === 'tool' ? Wrench : Layers3;
+          return <section key={group.key} className="sidebar-chip-group"><button className="sidebar-chip-heading" aria-expanded={!expandedNodes.has(`collapsed-${group.key}`)} onClick={() => toggleExpand(`collapsed-${group.key}`)}><Icon size={14}/><span>{group.chip || '工具测试'}</span><small>{typeFilter === 'all' ? TEST_TYPE_LABELS[group.type] + ' · ' : ''}{group.projects.length}</small></button>{!expandedNodes.has(`collapsed-${group.key}`) && group.projects.map(node => renderNode(node, 0))}</section>;
+        })}
         {tree.length === 0 && !(addingNode && addingNode.parentId === 'root') && (
           <div className="text-center py-3 text-xs" style={{ color: '#999', paddingLeft: '12px' }}>
             暂无项目，点击 + 创建
@@ -2123,6 +2156,7 @@ function SidebarTree({
             )}
             {isManager && contextMenu.node.type === 'project' && (
               <>
+                <button className="w-full text-left px-3 py-1.5 text-sm hover:bg-blue-50" onClick={() => { onEditProject(contextMenu.node); setContextMenu(null); }}>项目设置 / 测试分类</button>
                 {contextMenu.node.publishStatus === 'draft' && !contextMenu.node.isArchived && (
                   <button
                     className="w-full text-left px-3 py-1.5 text-sm hover:bg-violet-50"
@@ -3193,7 +3227,7 @@ function CaseDetail({
 
   return (
     <div
-      className="p-5 relative"
+      className="case-detail-surface p-5 relative"
       onBlurCapture={() => {
         if (dirtyFieldsRef.current.size > 0 && !saveConflictRef.current) scheduleAutoSave(120);
       }}

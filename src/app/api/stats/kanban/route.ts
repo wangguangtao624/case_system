@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { TEST_TYPES, type TestType } from '@/lib/project-classification';
 import { getDb } from '@/lib/db';
 import { getCurrentUser, isManagerUser } from '@/lib/auth';
 
@@ -60,13 +61,15 @@ export async function GET(request: NextRequest) {
     const priorityMode = searchParams.get('priorityMode') === 'high' ? 'high' : 'all';
     const projectId = Number(searchParams.get('projectId') || 0);
     const includeArchived = searchParams.get('includeArchived') === '1';
+    const testType = searchParams.get('testType');
+    if (testType && testType !== 'all' && !TEST_TYPES.includes(testType as TestType)) return NextResponse.json({ error: '测试类型无效' }, { status: 400 });
     const manager = isManagerUser(user.username);
 
     let projectQuery = `
-      SELECT p.id, p.name, p.start_date, p.end_date, p.high_priority_start_date, p.high_priority_end_date, p.is_archived, p.publish_status
+      SELECT p.id, p.name, p.test_type, p.chip_model, p.firmware_version, p.start_date, p.end_date, p.high_priority_start_date, p.high_priority_end_date, p.is_archived, p.publish_status
       FROM projects p
     `;
-    const projectParams: number[] = [];
+    const projectParams: (string | number)[] = [];
     if (projectId > 0) {
       projectQuery += ' WHERE p.id = ?';
       projectParams.push(projectId);
@@ -80,11 +83,18 @@ export async function GET(request: NextRequest) {
         projectQuery += " WHERE p.publish_status = 'published' AND p.is_archived = 0";
       }
     }
+    if (testType && testType !== 'all') {
+      projectQuery += ' AND p.test_type = ?';
+      projectParams.push(testType);
+    }
     projectQuery += ' ORDER BY p.is_archived ASC, p.sort_order, p.id';
 
     const activeProjects = db.prepare(projectQuery).all(...projectParams) as {
       id: number;
       name: string;
+      test_type: TestType;
+      chip_model: string;
+      firmware_version: string;
       start_date: string | null;
       end_date: string | null;
       high_priority_start_date: string | null;
@@ -307,6 +317,9 @@ export async function GET(request: NextRequest) {
       return {
         id: project.id,
         name: project.name,
+        testType: project.test_type,
+        chipModel: project.chip_model,
+        firmwareVersion: project.firmware_version,
         startDate,
         endDate,
         allStartDate: project.start_date,
