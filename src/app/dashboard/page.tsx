@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
 import { isHttpJiraLink, parseJiraLinks, serializeJiraLinks } from '@/lib/jira-links';
 import { ReportDownloadButton } from '@/components/report-download-button';
+import { createTreeLoader } from '@/lib/tree-loader';
 
 async function copyText(text: string) {
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text);
@@ -401,8 +402,8 @@ export default function DashboardPage() {
   const MIN_SIDEBAR_WIDTH = 300;
   const [loading, setLoading] = useState(true);
   const [allUsers, setAllUsers] = useState<UserItem[]>([]);
-  const [testerFilter, setTesterFilter] = useState<string>(''); // '' = all, 'my' = my tasks, user_id = specific
-  const [projectFilter, setProjectFilter] = useState<string>('active'); // 'draft', 'active', 'archived', 'all'
+  const [testerFilter, setTesterFilterState] = useState<string>(''); // '' = all, 'my' = my tasks, user_id = specific
+  const [projectFilter, setProjectFilterState] = useState<string>('active'); // 'draft', 'active', 'archived', 'all'
   const [archiveDialog, setArchiveDialog] = useState<{ projectId: number; projectName: string } | null>(null);
   const [archiveNote, setArchiveNote] = useState('');
   const [archiving, setArchiving] = useState(false);
@@ -435,25 +436,18 @@ export default function DashboardPage() {
   const [showPreview, setShowPreview] = useState<{ fileId: number; content: string; filename: string; truncated: boolean; mediaType?: PreviewMediaType; downloadUrl?: string; previewUrl?: string } | null>(null);
   const [statsPreview, setStatsPreview] = useState<{ level: 'project' | 'module'; id: number; name: string } | null>(null);
 
-  const loadTree = useCallback(async (filterTesterId?: string, archiveFilter?: string) => {
-    try {
-      const params = new URLSearchParams();
-      if (filterTesterId) params.set('testerId', filterTesterId);
-      if (archiveFilter) params.set('archive', archiveFilter);
-      const res = await fetch(`/api/tree?${params.toString()}`);
-      const data = await res.json();
-      if (data.tree) {
-        setTree(data.tree);
-      }
-      if (data.isManager !== undefined) {
-        setIsManager(data.isManager);
-      }
-      return data.tree as TreeNode[] | undefined;
-    } catch (error) {
-      console.error('Load tree error:', error);
-      return undefined;
-    }
-  }, []);
+  const [treeLoader] = useState(() => createTreeLoader<TreeNode>(setTree, setIsManager));
+  const loadTree = useCallback(() => treeLoader.load(), [treeLoader]);
+  const setTesterFilter = useCallback((value: string) => {
+    treeLoader.setFilters({ testerId: value === 'my' && user ? String(user.id) : value });
+    setTesterFilterState(value);
+  }, [treeLoader, user]);
+  const setProjectFilter = useCallback((value: string) => {
+    treeLoader.setFilters({ archive: value });
+    setProjectFilterState(value);
+  }, [treeLoader]);
+
+  useEffect(() => () => treeLoader.dispose(), [treeLoader]);
 
   const refreshBugTodoCount = useCallback(async () => {
     if (!user) return;
@@ -524,8 +518,7 @@ export default function DashboardPage() {
   }, []);
 
   const refreshKanbanAssignmentViews = useCallback(async () => {
-    const resolvedTesterFilter = testerFilter === 'my' && user ? String(user.id) : testerFilter || '';
-    await loadTree(resolvedTesterFilter, projectFilter);
+    await loadTree();
 
     if (showKanban) {
       await fetchKanbanData(kanbanPriorityMode);
@@ -543,13 +536,10 @@ export default function DashboardPage() {
     fetchProjectOverview,
     kanbanPriorityMode,
     loadTree,
-    projectFilter,
     selectedProjectOverview,
     selectedProjectOverviewMode,
     selectedProjectOverviewTesterFilter,
     showKanban,
-    testerFilter,
-    user,
   ]);
 
   const handleAssignTargetFromKanban = useCallback(async (
@@ -635,7 +625,7 @@ export default function DashboardPage() {
         if (data.user) {
           setUser(data.user);
           setIsManager(MANAGER_USERNAMES.includes(data.user.username));
-          loadTree('', 'active');
+          loadTree();
           // Load all users for tester filter and assignment
           fetch('/api/users').then(r => r.json()).then(d => {
             if (d.users) setAllUsers(d.users);
@@ -646,7 +636,7 @@ export default function DashboardPage() {
       })
       .catch(() => router.push('/login'))
       .finally(() => setLoading(false));
-  }, []);
+  }, [loadTree, router]);
 
   const [casePermissions, setCasePermissions] = useState<CasePermissions>({ isManager: false, isAssignedTester: false, canEditCore: false, canEditResult: false });
   const [caseTester, setCaseTester] = useState<CaseTester | null>(null);
@@ -736,7 +726,7 @@ export default function DashboardPage() {
     let path = findNodePathByDbId(tree, type, dbId);
     if (!path) {
       setTesterFilter('');
-      const freshTree = await loadTree('', projectFilter);
+      const freshTree = await loadTree();
       path = freshTree ? findNodePathByDbId(freshTree, type, dbId) : null;
     }
     if (path) {
@@ -745,7 +735,7 @@ export default function DashboardPage() {
     } else {
       setSelectedNodeId(`${type}-${dbId}`);
     }
-  }, [expandNodePath, findNodePathByDbId, loadTree, projectFilter, tree]);
+  }, [expandNodePath, findNodePathByDbId, loadTree, setTesterFilter, tree]);
 
   const handleOpenCaseById = useCallback(async (caseId: number) => {
     setShowKanban(false);
@@ -766,7 +756,7 @@ export default function DashboardPage() {
       if (data.case) {
         if (!matchedPath) {
           setTesterFilter('');
-          const freshTree = await loadTree('', projectFilter);
+          const freshTree = await loadTree();
           const freshPath = freshTree ? findNodePathByDbId(freshTree, 'case', caseId) : null;
           if (freshPath) {
             expandNodePath(freshPath);
@@ -786,7 +776,7 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('Load case error:', error);
     }
-  }, [expandNodePath, findCaseNodeByDbId, findNodePathByDbId, loadTree, projectFilter, tree]);
+  }, [expandNodePath, findCaseNodeByDbId, findNodePathByDbId, loadTree, setTesterFilter, tree]);
 
   const handleLogout = async () => {
     await fetch('/api/auth/logout', { method: 'POST' });
@@ -799,8 +789,7 @@ export default function DashboardPage() {
     setSelectedNodeId(null);
     setSelectedProjectOverview(null);
     setSelectedProjectSpace(null);
-    const filterId = value === 'my' && user ? String(user.id) : value;
-    loadTree(filterId || '', projectFilter);
+    loadTree();
   };
 
   const handleProjectFilterChange = (value: string) => {
@@ -809,8 +798,7 @@ export default function DashboardPage() {
     setSelectedNodeId(null);
     setSelectedProjectOverview(null);
     setSelectedProjectSpace(null);
-    const filterId = testerFilter === 'my' && user ? String(user.id) : testerFilter;
-    loadTree(filterId || '', value);
+    loadTree();
   };
 
   const handleSelectProjectSpace = useCallback((projectId: number, projectName: string) => {
@@ -837,7 +825,7 @@ export default function DashboardPage() {
       if (data.success) {
         setArchiveDialog(null);
         setArchiveNote('');
-        loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
+        loadTree();
       } else {
         alert(data.error || '归档失败');
       }
@@ -854,7 +842,7 @@ export default function DashboardPage() {
       const res = await fetch(`/api/archives?projectId=${projectId}`, { method: 'DELETE' });
       const data = await res.json();
       if (data.success) {
-        loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
+        loadTree();
       } else {
         alert(data.error || '删除失败');
       }
@@ -880,7 +868,7 @@ export default function DashboardPage() {
       setSelectedProjectOverview(null);
       setSelectedNodeId(null);
       setProjectFilter('active');
-      loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', 'active');
+      loadTree();
     } catch {
       alert('撤销归档失败');
     }
@@ -1016,7 +1004,7 @@ export default function DashboardPage() {
                 fetchProjectOverview(projectId, 'all', overviewTesterFilter);
               }}
               onSelectProjectSpace={handleSelectProjectSpace}
-              onTreeChange={() => loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter)}
+              onTreeChange={() => loadTree()}
               onToggleSidebar={() => setSidebarCollapsed(true)}
               onPreview={(level, id, name) => setStatsPreview({ level, id, name })}
               isManager={isManager}
@@ -1038,11 +1026,7 @@ export default function DashboardPage() {
                     alert(data.error || '发布失败');
                     return;
                   }
-                  if (projectFilter === 'draft') {
-                    loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', 'draft');
-                  } else {
-                    loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter || '', projectFilter);
-                  }
+                  loadTree();
                 } catch {
                   alert('发布失败');
                 }
@@ -1169,7 +1153,7 @@ export default function DashboardPage() {
                 }).then(r => r.json()).then(data => {
                   if (data.success) {
                     // Reload case to get updated tester info
-                    loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter);
+                    loadTree();
                     // Reload case detail
                     fetch(`/api/cases/${selectedCase.id}?_t=${Date.now()}`)
                       .then(r => r.json())
@@ -1188,7 +1172,7 @@ export default function DashboardPage() {
                   .then(r => r.json())
                   .then(data => {
                     if (data.success) {
-                      loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter);
+                      loadTree();
                       fetch(`/api/cases/${selectedCase.id}?_t=${Date.now()}`)
                         .then(r => r.json())
                         .then(d => {
@@ -1204,7 +1188,7 @@ export default function DashboardPage() {
               onGenerateReport={(caseId) => copyDynamicReportLink({ scope: 'case', caseId }).then(() => alert('动态报告链接已复制')).catch(error => alert(error.message))}
               onUpdate={(updatedCase) => {
                 setSelectedCase(updatedCase);
-                loadTree(testerFilter === 'my' && user ? String(user.id) : testerFilter); // Refresh tree to update test result icons
+                loadTree(); // Refresh tree to update test result icons
               }}
               onFilesChange={(files) => setSelectedFiles(files)}
               onPreviewFile={(fileId, content, filename, truncated, options) => {
@@ -2991,21 +2975,25 @@ function CaseDetail({
     };
   }, [flushAutoSave]);
 
-  const handleApplyDeviceToProject = async () => {
+  const handleApplyDeviceToProject = async (scope: 'blank' | 'unexecuted') => {
     const deviceName = form.test_device.trim();
     if (!deviceName) {
       setMessage({ type: 'error', text: '请先填写或选择测试设备' });
       return;
     }
-    await flushAutoSave();
-    if (saveConflictRef.current) return;
     setApplyingDevice(true);
     setShowDeviceOptions(false);
     try {
+      await flushAutoSave();
+      if (saveConflictRef.current) return;
+      if (saveInFlightRef.current || dirtyFieldsRef.current.size > 0) {
+        setMessage({ type: 'error', text: '当前 Case 尚未保存成功，请保存成功后再批量应用设备' });
+        return;
+      }
       const response = await fetch('/api/cases', {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: form.id, test_device: deviceName }),
+        body: JSON.stringify({ id: form.id, test_device: deviceName, scope }),
       });
       const data = await response.json();
       if (!response.ok || !data.success) throw new Error(data.error || '批量应用失败');
@@ -3018,7 +3006,7 @@ function CaseDetail({
       formRef.current = updatedForm;
       setForm(updatedForm);
       onUpdate(updatedForm);
-      setMessage({ type: 'success', text: `已应用到 ${data.updatedCount || 0} 个未填写的 Case` });
+      setMessage({ type: 'success', text: `已应用到 ${data.updatedCount || 0} 个${scope === 'unexecuted' ? '未执行' : '未填写设备'}的 Case` });
     } catch (error) {
       setMessage({ type: 'error', text: error instanceof Error ? error.message : '批量应用失败' });
     } finally {
@@ -3580,9 +3568,10 @@ function CaseDetail({
             <tr style={{ borderBottom: '1px solid #E8E8E8' }}>
               <td className="px-3 py-2 text-xs font-medium whitespace-nowrap" style={{ color: '#6B7280', backgroundColor: '#F5F5F5', borderRight: '1px solid #E8E8E8' }}>测试设备</td>
               <td colSpan={3} className="px-2 py-1.5" style={{ backgroundColor: 'transparent' }}>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <div ref={deviceSelectRef} className="relative min-w-0 flex-1">
                     <input type="text" value={form.test_device || ''}
+                      disabled={applyingDevice}
                       onChange={(e) => {
                         handleFieldChange('test_device', e.target.value);
                         setDeviceOptionQuery(e.target.value);
@@ -3602,6 +3591,7 @@ function CaseDetail({
                         onClick={() => { setDeviceOptionQuery(''); setShowDeviceOptions(open => !open); }}
                         className="absolute inset-y-0 right-0 flex w-8 items-center justify-center rounded-r text-gray-400 hover:text-blue-600"
                         aria-label="选择测试设备"
+                        disabled={applyingDevice}
                       >
                         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m4 6 4 4 4-4" /></svg>
                       </button>
@@ -3625,16 +3615,28 @@ function CaseDetail({
                     )}
                   </div>
                   {canEditResult && (
-                    <button
-                      type="button"
-                      onClick={handleApplyDeviceToProject}
-                      disabled={applyingDevice || saving || !form.test_device.trim()}
-                      className="shrink-0 rounded border px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
-                      style={{ color: '#0073E6', borderColor: '#B3D9FF', backgroundColor: '#FFFFFF' }}
-                      title="应用到当前项目中所有尚未填写测试设备的 Case，不覆盖已有内容"
-                    >
-                      {applyingDevice ? '应用中...' : '应用到全部空白 Case'}
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => void handleApplyDeviceToProject('blank')}
+                        disabled={applyingDevice || saving || !form.test_device.trim()}
+                        className="shrink-0 rounded border px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        style={{ color: '#0073E6', borderColor: '#B3D9FF', backgroundColor: '#FFFFFF' }}
+                        title="应用到当前项目中所有尚未填写测试设备的 Case，不覆盖已有内容"
+                      >
+                        {applyingDevice ? '应用中...' : '应用到全部空白 Case'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleApplyDeviceToProject('unexecuted')}
+                        disabled={applyingDevice || saving || !form.test_device.trim()}
+                        className="shrink-0 rounded border px-2.5 py-1 text-[11px] font-medium transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                        style={{ color: '#0073E6', borderColor: '#B3D9FF', backgroundColor: '#FFFFFF' }}
+                        title="覆盖当前项目中有编辑权限且尚未选择测试结果的 Case 的设备信息，保留已标记 Pass、Fail、Block 的 Case"
+                      >
+                        {applyingDevice ? '应用中...' : '应用到全部未执行 Case'}
+                      </button>
+                    </>
                   )}
                 </div>
               </td>

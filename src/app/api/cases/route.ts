@@ -361,6 +361,10 @@ export async function PATCH(request: NextRequest) {
     const data = await request.json();
     const caseId = Number(data.id);
     const deviceName = typeof data.test_device === 'string' ? data.test_device.trim() : '';
+    const scope = data.scope ?? 'blank';
+    if (scope !== 'blank' && scope !== 'unexecuted') {
+      return NextResponse.json({ error: '无效的测试设备应用范围' }, { status: 400 });
+    }
     if (!caseId) return NextResponse.json({ error: '缺少用例ID' }, { status: 400 });
     if (!deviceName) return NextResponse.json({ error: '请先填写或选择测试设备' }, { status: 400 });
     if (deviceName.length > TEST_DEVICE_MAX_LENGTH) {
@@ -391,15 +395,19 @@ export async function PATCH(request: NextRequest) {
       }
     }
 
-    const blankCases = db.prepare(`
+    // Recheck the same condition when updating so a recorded result is never overwritten.
+    const targetCondition = scope === 'unexecuted'
+      ? "TRIM(COALESCE(test_result, '')) = ''"
+      : "TRIM(COALESCE(test_device, '')) = ''";
+    const targetCases = db.prepare(`
       SELECT c.id
       FROM cases c
       JOIN modules m ON m.id = c.module_id
-      WHERE m.project_id = ? AND TRIM(COALESCE(c.test_device, '')) = ''
+      WHERE m.project_id = ? AND ${targetCondition}
     `).all(sourceCase.project_id) as Array<{ id: number }>;
     const editableCaseIds = manager
-      ? blankCases.map(item => item.id)
-      : blankCases
+      ? targetCases.map(item => item.id)
+      : targetCases
           .filter(item => resolveCaseTester(db, item.id)?.userId === user.id)
           .map(item => item.id);
 
@@ -407,7 +415,7 @@ export async function PATCH(request: NextRequest) {
       const update = db.prepare(`
         UPDATE cases
         SET test_device = ?, revision = revision + 1, updated_at = datetime('now', 'localtime')
-        WHERE id = ? AND TRIM(COALESCE(test_device, '')) = ''
+        WHERE id = ? AND ${targetCondition}
       `);
       let updatedCount = 0;
       for (const targetCaseId of caseIds) {

@@ -11,7 +11,7 @@ export async function GET(request: NextRequest) {
 
     const { searchParams } = new URL(request.url);
     const testerFilter = searchParams.get('testerId'); // filter by assigned tester
-    const archiveFilter = searchParams.get('archive'); // 'draft' | 'active' | 'archived' | 'all'
+    const archiveFilter = searchParams.get('archive') || 'active'; // 'draft' | 'active' | 'archived' | 'all'
     const manager = isManagerUser(user.username);
 
     // Build a set of case IDs assigned to the tester if filtering
