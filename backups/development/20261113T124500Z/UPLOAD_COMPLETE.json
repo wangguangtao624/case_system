@@ -1,0 +1,8 @@
+{
+  "backup_id": "20261113T124500Z",
+  "completed_at": "2026-11-13T13:53:02.610383+00:00",
+  "parts": 63,
+  "encrypted_sha256": "bd3f777a9f584fb6bbda034e672709f3e7f38336a5b85021f5e529c3095ed9b9",
+  "verified_local_restore": true,
+  "code_commit": "e61f8eeac78001303eb05004e50587b03e5b5220"
+}
