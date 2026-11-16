@@ -1,5 +1,6 @@
 'use client';
 
+import AutomationPanel from '@/components/automation-panel';
 import { useState, useEffect, useCallback, useRef, Fragment, useMemo, startTransition } from 'react';
 import { createPortal } from 'react-dom';
 import { useRouter } from 'next/navigation';
@@ -3732,6 +3733,8 @@ function CaseDetail({
           </tbody>
         </table>
       </div>
+
+      <AutomationPanel caseNo={caseData.case_no} caseId={caseData.id} moduleId={caseData.module_id} />
 
       {/* ============ Test Process & Logs Section ============ */}
       <div className="rounded-lg border p-4 mb-4" style={{ borderColor: '#E5E7EB', backgroundColor: '#FAFBFC' }}>
