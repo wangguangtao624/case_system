@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import FlowEditor from './flow-editor';
 import BatchPanel from './batch-panel';
+import WorkbenchStatus from './workbench-status';
 
 type Props = { caseNo: string | null; caseId: number; moduleId: number };
 export default function AutomationPanel({ caseNo, caseId, moduleId }: Props) {
@@ -49,6 +50,7 @@ export default function AutomationPanel({ caseNo, caseId, moduleId }: Props) {
     {result?.cases?.map(item=><div key={item.case_no} className="text-xs mt-2" style={{color:'#1E3A5F'}}>{item.register}：{item.values.map(v=>'0x'+v.toString(16).padStart(8,'0')).join(' → ')} · {item.status}{item.error ? ' · '+item.error : ''}</div>)}
     {result?.cleanup && <p className="text-xs mt-2" style={{color:result.cleanup.some(x=>x.includes('失败'))?'#b91c1c':'#64748B'}}>结束处理：{result.cleanup.join(' · ')}</p>}
     {result?.preview && <a href={`/api/automation/local-pilot?run=${encodeURIComponent(runId)}&caseId=${caseId}&image=1`} target="_blank" rel="noopener noreferrer" title="点击打开原图"><img alt="本次设备抓图，点击打开原图" className="mt-3 rounded cursor-zoom-in" style={{maxWidth:'360px',width:'100%'}} src={`/api/automation/local-pilot?run=${encodeURIComponent(runId)}&caseId=${caseId}&image=1`}/></a>}
+    <WorkbenchStatus/>
     <BatchPanel key={moduleId} moduleId={moduleId}/>
     {editing && <FlowEditor key={caseId} caseId={caseId}/>}
     {message && <p className="text-xs mt-2" style={{color:'#92400E'}}>{message}</p>}
