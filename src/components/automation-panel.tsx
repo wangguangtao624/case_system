@@ -44,7 +44,7 @@ export default function AutomationPanel({ caseNo, caseId, moduleId }: Props) {
       {pilot && <button type="button" disabled={running} onClick={runPilot} className="px-3 py-1.5 rounded text-xs" style={{background:'#2563EB',color:'white',opacity:running?.6:1}}>{running?'执行中…':'本机实机读取'}</button>}
       {supported && <button type="button" onClick={downloadDraft} className="px-3 py-1.5 rounded text-xs" style={{background:'#2563EB',color:'white'}}>下载画布草稿</button>}
     </div>
-    <p className="text-xs mt-2" style={{color:'#64748B'}}>本机试点直接控制连接此电脑的设备；尚未接入跨电脑设备代理。参考型号的预期值需复核。</p>
+    <p className="text-xs mt-2" style={{color:'#64748B'}}>画布可由管理员编辑并保存。设备执行仍仅支持连接设备的本机试点；当前服务器尚未接入跨电脑设备代理，参考型号的预期值需复核。</p>
     {pilot && history.length>0 && <label className="text-xs mt-2 block">执行记录 <select value={runId} onChange={e=>void showRun(e.target.value)} className="ml-2 border rounded p-1"><option value="">选择一次执行</option>{history.map(item=><option key={item.runId} value={item.runId}>{new Date(item.startedAt).toLocaleString()} · {item.state==='running'?'运行中':'已结束'}</option>)}</select><button type="button" className="ml-2 px-2 py-1 border rounded bg-white" disabled={!runId} onClick={()=>void showRun(runId)}>查看记录</button></label>}
     {result?.cases?.map(item=><div key={item.case_no} className="text-xs mt-2" style={{color:'#1E3A5F'}}>{item.register}：{item.values.map(v=>'0x'+v.toString(16).padStart(8,'0')).join(' → ')} · {item.status}{item.error ? ' · '+item.error : ''}</div>)}
     {result?.cleanup && <p className="text-xs mt-2" style={{color:result.cleanup.some(x=>x.includes('失败'))?'#b91c1c':'#64748B'}}>结束处理：{result.cleanup.join(' · ')}</p>}
